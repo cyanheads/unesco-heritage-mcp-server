@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "unesco-heritage-mcp-server",
+  "version": "0.1.0",
+  "description": "UNESCO World Heritage sites and Man and the Biosphere reserves: search sites, danger listings, inscription criteria, and biosphere reserves.",
+  "author": {
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
+  },
+  "homepage": "https://github.com/cyanheads/unesco-heritage-mcp-server",
+  "repository": "https://github.com/cyanheads/unesco-heritage-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "unesco", "world-heritage", "biosphere-reserves"],
+  "mcpServers": {
+    "unesco-heritage-mcp-server": {
+      "command": "npx",
+      "args": ["-y", "@cyanheads/unesco-heritage-mcp-server"],
+      "env": {
+        "MCP_TRANSPORT_TYPE": "stdio"
+      }
+    }
+  }
+}

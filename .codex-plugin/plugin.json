@@ -1,0 +1,25 @@
+{
+  "name": "unesco-heritage-mcp-server",
+  "version": "0.1.0",
+  "description": "UNESCO World Heritage sites and Man and the Biosphere reserves: search sites, danger listings, inscription criteria, and biosphere reserves.",
+  "author": {
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
+  },
+  "homepage": "https://github.com/cyanheads/unesco-heritage-mcp-server",
+  "repository": "https://github.com/cyanheads/unesco-heritage-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "unesco", "world-heritage", "biosphere-reserves"],
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "interface": {
+    "displayName": "unesco-heritage-mcp-server",
+    "shortDescription": "Search UNESCO World Heritage sites, danger listings, and biosphere reserves.",
+    "longDescription": "Read-only access to the UNESCO Datahub's World Heritage List and Man and the Biosphere Programme datasets. Search 1,273 cultural, natural, and mixed sites by country, category, inscription year, or criteria (i through x), pull a site's Outstanding Universal Value justification and coordinates, list the sites on the List of World Heritage in Danger, and search the 797 biosphere reserves by country, regional network, or ecological description. No API key required.",
+    "developerName": "cyanheads",
+    "category": "Research",
+    "capabilities": ["Read"],
+    "websiteURL": "https://github.com/cyanheads/unesco-heritage-mcp-server",
+    "defaultPrompt": []
+  }
+}
