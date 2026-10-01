@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/unesco-heritage-mcp-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "mcpName": "io.github.cyanheads/unesco-heritage-mcp-server",
   "description": "Search UNESCO World Heritage sites, intangible heritage, and Man and the Biosphere reserves via MCP. STDIO or Streamable HTTP.",
   "author": "Casey Hand <casey@caseyjhand.com> (https://caseyjhand.com)",
