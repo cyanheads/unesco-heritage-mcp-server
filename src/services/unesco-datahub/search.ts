@@ -38,9 +38,13 @@ export function foldTier(...parts: readonly (string | undefined)[]): string {
   return ` ${folded}`;
 }
 
-/** Splits a query into folded words; empty when nothing searchable remains. */
+/**
+ * Splits a query into its distinct folded words, in first-seen order; empty
+ * when nothing searchable remains. A repeated word never changes a match, so it
+ * is kept once.
+ */
 export function queryWords(query: string): string[] {
-  return foldText(query).split(' ').filter(Boolean);
+  return [...new Set(foldText(query).split(' ').filter(Boolean))];
 }
 
 /**

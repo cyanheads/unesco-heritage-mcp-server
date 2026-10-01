@@ -1,11 +1,13 @@
 /**
- * @fileoverview Tests for the export-row schemas, the edge parsers (text
- * cleanup, criteria and the criterion (vi) inference, the components parser and
- * its rejection count, the year parsers, the `whc_sites` parser), and the
- * row → domain mappers, against synthetic fixture rows.
+ * @fileoverview Tests for the export-row schemas and their text length bounds,
+ * the edge parsers (text cleanup, criteria and the criterion (vi) inference, the
+ * components parser with its rejection count and linear-time split, the year
+ * parsers, the `whc_sites` parser), and the row → domain mappers, against
+ * synthetic fixture rows.
  * @module tests/services/unesco-datahub/rows.test
  */
 
+import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
   cleanText,
@@ -238,6 +240,75 @@ describe('parseComponentsList', () => {
     expect(result.components).toHaveLength(4);
     expect(result.unparsed).toBe(1);
   });
+
+  it.each([
+    ['many `, ref: ` sequences and no coordinates', `name: ${', ref: '.repeat(30_000)}x`],
+    [
+      'many `, ref: , latitude: 1` runs and no longitude',
+      `name: ${', ref: , latitude: 1'.repeat(10_000)}x`,
+    ],
+    [
+      'many coordinate tails and a non-numeric end',
+      `name: a${', ref: r, latitude: 1, longitude: 2'.repeat(5_000)}x`,
+    ],
+  ])('reads a 200 KB part with %s in linear time and counts it unparsed', (_label, part) => {
+    const started = performance.now();
+    const result = parseComponentsList(`{${part}}`);
+    const elapsedMs = performance.now() - started;
+    expect(result).toEqual({ components: [], parts: 1, unparsed: 1 });
+    expect(elapsedMs).toBeLessThan(50);
+  });
+
+  it('splits each entry exactly as an anchored name/ref/latitude/longitude pattern would', () => {
+    /** The entry grammar: greedy name, lazy ref, anchored numeric tail, so the last key sequence wins. */
+    const ENTRY =
+      /^name: (.*), ref: (.*?), latitude: (-?\d+(?:\.\d+)?), longitude: (-?\d+(?:\.\d+)?)$/s;
+    const expected = (part: string) => {
+      const match = ENTRY.exec(part);
+      const ref = match?.[2]?.trim();
+      const latitude = Number(match?.[3]);
+      const longitude = Number(match?.[4]);
+      if (!match || !ref || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+        return { components: [], parts: 1, unparsed: 1 };
+      }
+      const name = cleanText(match[1] ?? '');
+      return {
+        components: [{ ref, latitude, longitude, ...(name ? { name } : {}) }],
+        parts: 1,
+        unparsed: 0,
+      };
+    };
+    const token = fc.constantFrom(
+      'name: ',
+      ', ref: ',
+      ', latitude: ',
+      ', longitude: ',
+      'Gate',
+      'r-1',
+      ' ',
+      ',',
+      ':',
+      '-',
+      '.',
+      '1',
+      '45',
+      '2.5',
+      '-90',
+      '181',
+      '\n',
+      '<em>',
+      'é',
+    );
+    const part = fc
+      .tuple(fc.boolean(), fc.array(token, { maxLength: 14 }))
+      .map(([lead, tokens]) => `${lead ? 'name: ' : ''}${tokens.join('')}`);
+    fc.assert(
+      fc.property(part, (p) => {
+        expect(parseComponentsList(`{${p}}`)).toEqual(expected(p));
+      }),
+      { numRuns: 5_000 },
+    );
+  });
 });
 
 describe('yearsIn', () => {
@@ -400,6 +471,87 @@ describe('row schemas', () => {
   });
 });
 
+describe('text length bounds', () => {
+  const NAME = 2_000;
+  const TEXT = 65_536;
+  const COMPONENTS = 262_144;
+  const URL_LENGTH = 2_048;
+  const url = (length: number) => `https://example.test/${'a'.repeat(length - 21)}`;
+  const text = (length: number) => 'a'.repeat(length);
+  type Case = [string, number, (length: number) => unknown];
+  const scalar = (fields: string[], max: number, build = text): Case[] =>
+    fields.map((field) => [field, max, build]);
+  const listOf = (fields: string[], max: number): Case[] =>
+    fields.map((field) => [`${field}[]`, max, (length: number) => [text(length)]]);
+
+  const WHC_CASES: Case[] = [
+    ...scalar(
+      [
+        'name_en',
+        'name_fr',
+        'name_es',
+        'name_ru',
+        'name_ar',
+        'name_zh',
+        'main_image_copyright',
+        'main_image_author',
+      ],
+      NAME,
+    ),
+    ...scalar(['secondary_dates'], NAME),
+    ...scalar(['iso_codes'], NAME, (length) => `FR,${' '.repeat(length - 5)}DE`),
+    ...listOf(['states_names'], NAME),
+    ...scalar(['short_description_en', 'justification_en'], TEXT),
+    ...scalar(['components_list'], COMPONENTS),
+    ...scalar(['main_image_url'], URL_LENGTH, url),
+  ];
+  const ICH_CASES: Case[] = [
+    ...scalar(
+      [
+        'title_en',
+        'title_fr',
+        'main_image_caption_en',
+        'main_image_copyright',
+        'main_image_author',
+      ],
+      NAME,
+    ),
+    ...listOf(['concepts_primary_names', 'concepts_secondary_names'], NAME),
+    ...scalar(['description_en', 'whc_sites'], TEXT),
+    ...scalar(['http_url_en', 'main_image_url'], URL_LENGTH, url),
+  ];
+  const MAB_CASES: Case[] = [
+    ...scalar(['title_en', 'country_title_en', 'periodic_review', 'regional_group'], NAME),
+    ...scalar(
+      ['introduction_en', 'ecological_characteristics_en', 'socio_economic_characteristics_en'],
+      TEXT,
+    ),
+    ...scalar(['website', 'url'], URL_LENGTH, url),
+  ];
+  const field = (name: string) => name.replace('[]', '');
+
+  it.each(WHC_CASES)('whc001 %s holds at most %d characters', (name, max, build) => {
+    expect(WhcRowSchema.safeParse(whcRow({ [field(name)]: build(max) })).success).toBe(true);
+    const over = WhcRowSchema.safeParse(whcRow({ [field(name)]: build(max + 1) }));
+    expect(over.success).toBe(false);
+    expect(over.error?.issues[0]?.path[0]).toBe(field(name));
+  });
+
+  it.each(ICH_CASES)('ich001 %s holds at most %d characters', (name, max, build) => {
+    expect(IchRowSchema.safeParse(ichRow({ [field(name)]: build(max) })).success).toBe(true);
+    const over = IchRowSchema.safeParse(ichRow({ [field(name)]: build(max + 1) }));
+    expect(over.success).toBe(false);
+    expect(over.error?.issues[0]?.path[0]).toBe(field(name));
+  });
+
+  it.each(MAB_CASES)('mab001 %s holds at most %d characters', (name, max, build) => {
+    expect(MabRowSchema.safeParse(mabRow({ [field(name)]: build(max) })).success).toBe(true);
+    const over = MabRowSchema.safeParse(mabRow({ [field(name)]: build(max + 1) }));
+    expect(over.success).toBe(false);
+    expect(over.error?.issues[0]?.path[0]).toBe(field(name));
+  });
+});
+
 describe('DatasetMetaSchema', () => {
   const meta = {
     metas: { default: { data_processed: 'x', records_count: 3, license: 'CC BY-SA 4.0' } },
@@ -415,6 +567,14 @@ describe('DatasetMetaSchema', () => {
     ['a string count', { metas: { default: { ...meta.metas.default, records_count: '3' } } }],
     ['a negative count', { metas: { default: { ...meta.metas.default, records_count: -1 } } }],
     ['a missing license', { metas: { default: { data_processed: 'x', records_count: 3 } } }],
+    [
+      'a data_processed over 100 characters',
+      { metas: { default: { ...meta.metas.default, data_processed: 'x'.repeat(101) } } },
+    ],
+    [
+      'a license over 100 characters',
+      { metas: { default: { ...meta.metas.default, license: 'x'.repeat(101) } } },
+    ],
   ])('rejects %s', (_label, doc) => {
     expect(DatasetMetaSchema.safeParse(doc).success).toBe(false);
   });

@@ -114,28 +114,35 @@ const Year = z.string().regex(/^\d{4}$/);
 const GeoPoint = z.object({ lon: z.number(), lat: z.number() }).strict();
 const CRITERIA_TXT = /^(\((?:i|ii|iii|iv|v|vi|vii|viii|ix|x)\))+$/;
 
+/**
+ * Length bounds on upstream strings, in characters: names, credits, and short
+ * lists; descriptions, statements, and narratives; the pseudo-JSON component
+ * list; URLs. A longer value fails the row, and with it the refresh.
+ */
+const ShortText = z.string().max(2_000);
+const FreeText = z.string().max(65_536);
+const ComponentsText = z.string().max(262_144);
+const UrlText = z.string().max(2_048);
+
 export const WhcRowSchema = z
   .object({
     id_no: z.string().regex(/^[1-9]\d*$/),
-    name_en: z.string(),
-    name_fr: z.string(),
-    name_es: z.string().nullable(),
-    name_ru: z.string().nullable(),
-    name_ar: z.string().nullable(),
-    name_zh: z.string().nullable(),
-    short_description_en: z.string().nullable(),
-    justification_en: z.string().nullable(),
+    name_en: ShortText,
+    name_fr: ShortText,
+    name_es: ShortText.nullable(),
+    name_ru: ShortText.nullable(),
+    name_ar: ShortText.nullable(),
+    name_zh: ShortText.nullable(),
+    short_description_en: FreeText.nullable(),
+    justification_en: FreeText.nullable(),
     category: z.enum(CATEGORIES),
     criteria_txt: z.string().regex(CRITERIA_TXT).nullable(),
-    states_names: z.array(z.string()).min(1),
-    iso_codes: z
-      .string()
-      .regex(/^[A-Z]{2}(?:,\s*[A-Z]{2})*$/)
-      .nullable(),
+    states_names: z.array(ShortText).min(1),
+    iso_codes: ShortText.regex(/^[A-Z]{2}(?:,\s*[A-Z]{2})*$/).nullable(),
     region: z.enum(REGIONS),
     transboundary: TrueFalse,
     date_inscribed: Year,
-    secondary_dates: z.string(),
+    secondary_dates: ShortText,
     danger: TrueFalse,
     danger_list: z
       .string()
@@ -144,10 +151,10 @@ export const WhcRowSchema = z
     area_hectares: z.number().nullable(),
     coordinates: GeoPoint.nullable(),
     components_count: z.number().int().nonnegative(),
-    components_list: z.string().nullable(),
-    main_image_url: z.string().nullable(),
-    main_image_copyright: z.string().nullable(),
-    main_image_author: z.string().nullable(),
+    components_list: ComponentsText.nullable(),
+    main_image_url: UrlText.nullable(),
+    main_image_copyright: ShortText.nullable(),
+    main_image_author: ShortText.nullable(),
   })
   .strict();
 export type WhcRow = z.infer<typeof WhcRowSchema>;
@@ -156,19 +163,19 @@ export const IchRowSchema = z
   .object({
     ich_public_ref: z.string().regex(/^[1-9]\d{0,4}$/),
     inscription_year: Year,
-    title_en: z.string(),
-    title_fr: z.string(),
-    description_en: z.string(),
+    title_en: ShortText,
+    title_fr: ShortText,
+    description_en: FreeText,
     type_of_element_en: z.enum(INTANGIBLE_LISTS),
     countries: z.array(z.string().regex(/^[A-Z]{2}$/)).min(1),
-    http_url_en: z.string(),
-    concepts_primary_names: z.array(z.string()).nullable(),
-    concepts_secondary_names: z.array(z.string()).nullable(),
-    whc_sites: z.string().nullable(),
-    main_image_url: z.string(),
-    main_image_caption_en: z.string().nullable(),
-    main_image_copyright: z.string().nullable(),
-    main_image_author: z.string().nullable(),
+    http_url_en: UrlText,
+    concepts_primary_names: z.array(ShortText).nullable(),
+    concepts_secondary_names: z.array(ShortText).nullable(),
+    whc_sites: FreeText.nullable(),
+    main_image_url: UrlText,
+    main_image_caption_en: ShortText.nullable(),
+    main_image_copyright: ShortText.nullable(),
+    main_image_author: ShortText.nullable(),
   })
   .strict();
 export type IchRow = z.infer<typeof IchRowSchema>;
@@ -176,13 +183,13 @@ export type IchRow = z.infer<typeof IchRowSchema>;
 export const MabRowSchema = z
   .object({
     mab_id: z.string().min(1).max(20),
-    title_en: z.string(),
+    title_en: ShortText,
     iso2: z.string().regex(/^[A-Z]{2}$/),
-    country_title_en: z.string(),
+    country_title_en: ShortText,
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    introduction_en: z.string(),
-    ecological_characteristics_en: z.string().nullable(),
-    socio_economic_characteristics_en: z.string().nullable(),
+    introduction_en: FreeText,
+    ecological_characteristics_en: FreeText.nullable(),
+    socio_economic_characteristics_en: FreeText.nullable(),
     population_total: z.number(),
     population_core: z.number(),
     population_buffer: z.number(),
@@ -198,13 +205,13 @@ export const MabRowSchema = z
     area_transition_marine: z.number(),
     extension: z.number().nullable(),
     renaming: z.number().nullable(),
-    periodic_review: z.string().nullable(),
+    periodic_review: ShortText.nullable(),
     regional_network: z.enum(BIOSPHERE_NETWORK_NAMES).nullable(),
     coordinates: GeoPoint,
     tbr: TrueFalse,
-    website: z.string().nullable(),
-    url: z.string(),
-    regional_group: z.string(),
+    website: UrlText.nullable(),
+    url: UrlText,
+    regional_group: ShortText,
     sids: TrueFalse,
   })
   .strict();
@@ -214,9 +221,9 @@ export type MabRow = z.infer<typeof MabRowSchema>;
 export const DatasetMetaSchema = z.object({
   metas: z.object({
     default: z.object({
-      data_processed: z.string(),
+      data_processed: z.string().max(100),
       records_count: z.number().int().nonnegative(),
-      license: z.string(),
+      license: z.string().max(100),
     }),
   }),
 });
@@ -302,11 +309,42 @@ function sortCriteria(codes: Iterable<CriterionCode>): CriterionCode[] {
   return CRITERIA_CODES.filter((c) => set.has(c));
 }
 
-const COMPONENT_PART =
-  /^name: (.*), ref: (.*?), latitude: (-?\d+(?:\.\d+)?), longitude: (-?\d+(?:\.\d+)?)$/s;
+const NAME_KEY = 'name: ';
+const REF_KEY = ', ref: ';
+const LATITUDE_KEY = ', latitude: ';
+const LONGITUDE_KEY = ', longitude: ';
+const DECIMAL = /^-?\d+(?:\.\d+)?$/;
 
 /**
- * Parses UNESCO's pseudo-JSON `components_list`. Parts the pattern rejects (or
+ * Splits one `components_list` entry, `name: …, ref: …, latitude: …,
+ * longitude: …`, from the right: the last `, longitude: `, then the last
+ * `, latitude: ` before it, then the last `, ref: ` before that, with both
+ * coordinates decimal. Taking the last key sequence lets a name hold commas or
+ * key text, and keeps the split linear in the entry's length.
+ */
+function splitComponentPart(
+  part: string,
+): { name: string; ref: string; latitude: string; longitude: string } | undefined {
+  if (!part.startsWith(NAME_KEY)) return;
+  const longitudeAt = part.lastIndexOf(LONGITUDE_KEY);
+  if (longitudeAt < 0) return;
+  const latitudeAt = part.lastIndexOf(LATITUDE_KEY, longitudeAt - LATITUDE_KEY.length);
+  if (latitudeAt < 0) return;
+  const refAt = part.lastIndexOf(REF_KEY, latitudeAt - REF_KEY.length);
+  if (refAt < NAME_KEY.length) return;
+  const latitude = part.slice(latitudeAt + LATITUDE_KEY.length, longitudeAt);
+  const longitude = part.slice(longitudeAt + LONGITUDE_KEY.length);
+  if (!DECIMAL.test(latitude) || !DECIMAL.test(longitude)) return;
+  return {
+    name: part.slice(NAME_KEY.length, refAt),
+    ref: part.slice(refAt + REF_KEY.length, latitudeAt),
+    latitude,
+    longitude,
+  };
+}
+
+/**
+ * Parses UNESCO's pseudo-JSON `components_list`. Entries that don't split (or
  * with an empty ref, or out-of-range coordinates) are skipped and counted.
  */
 export function parseComponentsList(list: string | null): {
@@ -322,15 +360,15 @@ export function parseComponentsList(list: string | null): {
   const components: SiteComponent[] = [];
   let unparsed = 0;
   for (const part of parts) {
-    const match = COMPONENT_PART.exec(part);
-    const ref = match?.[2]?.trim();
-    const latitude = Number(match?.[3]);
-    const longitude = Number(match?.[4]);
-    if (!match || !ref || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+    const fields = splitComponentPart(part);
+    const ref = fields?.ref.trim();
+    const latitude = Number(fields?.latitude);
+    const longitude = Number(fields?.longitude);
+    if (!fields || !ref || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
       unparsed += 1;
       continue;
     }
-    const name = cleanText(match[1] ?? '');
+    const name = cleanText(fields.name);
     components.push({ ref, latitude, longitude, ...(name ? { name } : {}) });
   }
   return { components, parts: parts.length, unparsed };

@@ -9,7 +9,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { countOf, renderSources, sourcesField } from '@/mcp-server/shared/enrichment.js';
-import { queryInput } from '@/mcp-server/shared/inputs.js';
+import { MAX_QUERY_WORDS, queryInput } from '@/mcp-server/shared/inputs.js';
 import { cell, inline } from '@/mcp-server/shared/markdown.js';
 import {
   alpha3Of,
@@ -194,7 +194,7 @@ export const listReferenceTool = tool('unesco_list_reference', {
         'What to list. criteria: the ten inscription criteria (i)–(x) with meanings and site counts, the values of the criteria input of unesco_search_sites. countries: every country with its ISO alpha-2 and alpha-3 codes and counts per dataset, the values of every country input. regions: the five UNESCO regions with codes, the values of the region inputs. intangible_lists: the three intangible heritage lists with acronyms, the values of the list input of unesco_search_intangible_heritage. biosphere_networks: the MAB regional networks with acronyms, the values of the regional_network input of unesco_search_biosphere_reserves. datasets: each dataset with its record count, data date, license, attribution, and coverage notes.',
       ),
     filter: queryInput(
-      "Keep only entries whose name or code (a criterion's meaning, a dataset's title) contains every word of this text, each word matching at the start of a word. Case, accents, and punctuation are ignored, so the filter must contain at least one letter or digit. For example, a country name finds its ISO code. For countries, a two- or three-letter ISO code (or UK) keeps exactly that country, as the country inputs read it, and common former or everyday names such as Turkey, Swaziland, or Holland match too.",
+      `Keep only entries whose name or code (a criterion's meaning, a dataset's title) contains every word of this text, each word matching at the start of a word. Case, accents, and punctuation are ignored, so the filter must contain at least one letter or digit and at most ${MAX_QUERY_WORDS} distinct words. For example, a country name finds its ISO code. For countries, a two- or three-letter ISO code (or UK) keeps exactly that country, as the country inputs read it, and common former or everyday names such as Turkey, Swaziland, or Holland match too.`,
       100,
     ),
   }),

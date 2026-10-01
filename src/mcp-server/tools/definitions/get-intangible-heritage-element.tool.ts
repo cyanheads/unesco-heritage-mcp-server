@@ -10,7 +10,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { renderSources, sourcesField } from '@/mcp-server/shared/enrichment.js';
 import { ichRefInput } from '@/mcp-server/shared/inputs.js';
-import { inline, quoted } from '@/mcp-server/shared/markdown.js';
+import { bareUrl, inline, quoted } from '@/mcp-server/shared/markdown.js';
 import { buildElementRecord } from '@/services/unesco-datahub/records.js';
 import {
   getUnescoDataHubService,
@@ -134,7 +134,7 @@ export const getIntangibleHeritageElementTool = tool('unesco_get_intangible_heri
       `- **Countries:** ${countries.join(', ')}`,
       `- **Inscribed:** ${r.inscribed_year}`,
       `- **Multinational:** ${r.multinational ? 'Yes' : 'No'}`,
-      `- **URL:** ${r.url}`,
+      `- **URL:** ${bareUrl(r.url)}`,
       '',
       quoted('Description', r.description),
       '',
@@ -149,7 +149,7 @@ export const getIntangibleHeritageElementTool = tool('unesco_get_intangible_heri
     ];
     if (r.image) {
       lines.push(
-        `**Image:** ${r.image.url}`,
+        `**Image:** ${bareUrl(r.image.url)}`,
         ...(r.image.caption ? [`Caption: ${inline(r.image.caption)}`] : []),
         ...(r.image.copyright ? [`© ${inline(r.image.copyright)}`] : []),
         ...(r.image.author ? [`Photo: ${inline(r.image.author)}`] : []),

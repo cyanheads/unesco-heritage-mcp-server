@@ -2,8 +2,8 @@
  * @fileoverview Snapshot lifecycle for the three UNESCO Data Hub datasets
  * (`whc001`, `ich001`, `mab001`): lazy load on first use, single-flight, 24 h
  * TTL with stale-while-revalidate, failure backoff, and the resilient load
- * pipeline (pacer inside `withRetry` under a total deadline, strict row
- * validation, row-count and license checks, index build).
+ * pipeline (pacer inside `withRetry` under a total deadline, byte-budgeted body
+ * reads, strict row validation, row-count and license checks, index build).
  * @module services/unesco-datahub/unesco-datahub-service
  */
 
@@ -61,6 +61,15 @@ const EXPORT_FIELDS: Readonly<Record<DatasetId, readonly string[]>> = {
   mab001: MAB_FIELDS,
 };
 
+const MiB = 1_048_576;
+/** Decoded-body budgets: a body past its budget fails the load as unreadable. */
+const METADATA_MAX_BYTES = MiB;
+const EXPORT_MAX_BYTES: Readonly<Record<DatasetId, number>> = {
+  whc001: 64 * MiB,
+  ich001: 16 * MiB,
+  mab001: 16 * MiB,
+};
+
 /** Constructor seams for tests; production uses the defaults. */
 export interface UnescoDataHubServiceOptions {
   /** HTTP seam with `fetchWithTimeout`'s signature. */
@@ -76,6 +85,13 @@ interface DatasetMeta {
   asOf: string;
   license: string;
   recordsCount: number;
+}
+
+/** Which document a GET reads, and the most decoded bytes its body may hold. */
+interface BodyBudget {
+  dataset: DatasetId;
+  document: 'metadata' | 'export';
+  maxBytes: number;
 }
 
 type LoadOutcome<S> = { ok: true; snapshot: S } | { ok: false; error: unknown };
@@ -248,7 +264,12 @@ export class UnescoDataHubService {
     return withRetry(
       async (attempt) => {
         const meta = DatasetMetaSchema.parse(
-          await this.fetchJson(`${BASE_URL}/${id}`, attempt, logCtx),
+          await this.fetchJson(
+            `${BASE_URL}/${id}`,
+            { dataset: id, document: 'metadata', maxBytes: METADATA_MAX_BYTES },
+            attempt,
+            logCtx,
+          ),
         );
         const { data_processed, records_count, license } = meta.metas.default;
         if (license !== EXPECTED_LICENSE) {
@@ -258,7 +279,12 @@ export class UnescoDataHubService {
           );
         }
         const exportUrl = `${BASE_URL}/${id}/exports/json?select=${encodeURIComponent(EXPORT_FIELDS[id].join(','))}`;
-        const rows = await this.fetchJson(exportUrl, attempt, logCtx);
+        const rows = await this.fetchJson(
+          exportUrl,
+          { dataset: id, document: 'export', maxBytes: EXPORT_MAX_BYTES[id] },
+          attempt,
+          logCtx,
+        );
         if (!Array.isArray(rows)) {
           throw serviceUnavailable(`Dataset ${id} export was not a JSON array.`, { dataset: id });
         }
@@ -281,7 +307,12 @@ export class UnescoDataHubService {
     );
   }
 
-  private fetchJson(url: string, attempt: RetryAttempt, logCtx: RequestContext): Promise<unknown> {
+  private fetchJson(
+    url: string,
+    body: BodyBudget,
+    attempt: RetryAttempt,
+    logCtx: RequestContext,
+  ): Promise<unknown> {
     return this.pacer.run(
       async (signal) => {
         const response = await this.get(
@@ -293,7 +324,7 @@ export class UnescoDataHubService {
             headers: { accept: 'application/json' },
           },
         );
-        return (await response.json()) as unknown;
+        return readJson(response, body);
       },
       { signal: attempt.signal, maxWaitMs: attempt.remainingMs },
     );
@@ -415,6 +446,36 @@ export function sourceOf(snapshot: Snapshot<unknown>): SourceEntry {
     license: snapshot.license,
     attribution: datasetAttribution(snapshot.dataset),
   };
+}
+
+/**
+ * Reads a JSON body chunk by chunk and fails the load, non-retryably, once the
+ * decoded bytes pass the budget; leaving the loop cancels the stream. Counting
+ * decoded bytes bounds memory whatever the transfer encoding.
+ */
+async function readJson(
+  response: Response,
+  { dataset, document, maxBytes }: BodyBudget,
+): Promise<unknown> {
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of response.body ?? []) {
+    size += chunk.byteLength;
+    if (size > maxBytes) {
+      throw serviceUnavailable(
+        `Dataset ${dataset} ${document} is larger than its ${maxBytes / MiB} MiB budget; the snapshot was not replaced.`,
+        { dataset, document, maxBytes, retryable: false },
+      );
+    }
+    chunks.push(chunk);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(bytes));
 }
 
 /** Validates one export row against its strict schema; any failure fails the refresh. */

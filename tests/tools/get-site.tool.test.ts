@@ -564,6 +564,75 @@ describe('unesco_get_site — format() parity and text safety', () => {
     const { text } = await get({ id_no: '911' });
     expect(text).not.toContain('\r');
   });
+
+  it('renders link, image, and HTML syntax as text in content[] and keeps it verbatim in structuredContent', async () => {
+    const name = 'Synthetic ![x](https://example.test/t.gif) Site';
+    const description = 'See [the page](https://example.test/a) or <img src=x onerror=y>.';
+    const copyright = 'Owner <a href="https://example.test/b">link</a>';
+    useHub({
+      rows: {
+        whc001: [
+          whcRow({
+            id_no: '912',
+            name_en: name,
+            short_description_en: description,
+            main_image_copyright: copyright,
+            components_list: componentsList([
+              {
+                name: 'Part [one](https://example.test/c)',
+                ref: '912-001',
+                latitude: 1,
+                longitude: 2,
+              },
+            ]),
+          }),
+        ],
+      },
+    });
+    const { out, text } = await get({ id_no: '912' });
+
+    expect(out.name).toBe(name);
+    expect(out.description).toBe(description);
+    expect(out.image?.copyright).toBe(copyright);
+    expect(out.components[0]?.name).toBe('Part [one](https://example.test/c)');
+
+    expect(text).toContain('## Synthetic !\\[x\\](https://example.test/t.gif) Site (id_no 912)');
+    expect(text).toContain(
+      '> See \\[the page\\](https://example.test/a) or \\<img src=x onerror=y\\>.',
+    );
+    expect(text).toContain('© Owner \\<a href="https://example.test/b"\\>link\\</a\\>');
+    expect(text).toContain('- 912-001 — Part \\[one\\](https://example.test/c) (1, 2)');
+    expect(text).not.toMatch(/(^|[^\\])[[<]/m);
+  });
+
+  it('strips control and bidi characters from content[] and keeps them in structuredContent', async () => {
+    const [nul, esc, rlo, pdi] = [0x00, 0x1b, 0x202e, 0x2069].map((cp) => String.fromCodePoint(cp));
+    const name = `Mirror${rlo}Site${pdi} Name`;
+    const justification = `Criterion (iv): a${nul} synthetic${esc} ensemble.\vSecond line.`;
+    useHub({
+      rows: { whc001: [whcRow({ id_no: '913', name_en: name, justification_en: justification })] },
+    });
+    const { out, text } = await get({ id_no: '913' });
+
+    expect(out.name).toBe(name);
+    expect(out.justification).toBe(justification);
+    expect(text).toContain('## MirrorSite Name (id_no 913)');
+    expect(text).toContain('> Criterion (iv): a synthetic ensemble.\n> Second line.');
+    for (const ch of [nul, esc, rlo, pdi, '\v']) expect(text).not.toContain(ch);
+  });
+
+  it('prints an image URL carrying link syntax with its brackets percent-encoded, keeping the href in structuredContent', async () => {
+    const href = 'https://example.test/img/![x](https://example.test/t.gif)';
+    useHub({ rows: { whc001: [whcRow({ id_no: '914', main_image_url: href })] } });
+    const { out, text } = await get({ id_no: '914' });
+
+    expect(out.image?.url).toBe(href);
+    expect(text).toContain(
+      '**Image:** https://example.test/img/!%5Bx%5D(https://example.test/t.gif)',
+    );
+    expect(text).toContain('- **URL:** https://whc.unesco.org/en/list/914/');
+    expect(text).not.toMatch(/[[\]]/);
+  });
 });
 
 describe('unesco_get_site — sibling dataset independence', () => {

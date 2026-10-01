@@ -2,8 +2,9 @@
  * @fileoverview Tests for the snapshot lifecycle of UnescoDataHubService,
  * driven through its `get` and `now` seams: lazy load, request allowlist,
  * single-flight, TTL with stale-while-revalidate, failure backoff, strict row
- * validation, the row-count retry, the license check, and upstream failure
- * classes (non-2xx, malformed body, timeout, rate limit, network error).
+ * validation, the row-count retry, the body budgets and text bounds, the
+ * license check, and upstream failure classes (non-2xx, malformed body,
+ * timeout, rate limit, network error).
  * @module tests/services/unesco-datahub/unesco-datahub-service.test
  */
 
@@ -502,6 +503,126 @@ describe('strict validation and integrity checks', () => {
     const { service } = makeService({ rows: { whc001: [whcRow()] } });
     await service.getHeritage(ctx());
     expect(warning).not.toHaveBeenCalled();
+  });
+});
+
+describe('body budgets and text bounds', () => {
+  const MiB = 1_048_576;
+
+  /**
+   * A JSON document followed by `padMiB` MiB of whitespace, streamed one MiB
+   * per pull. Valid JSON whatever its length, so only a budget can refuse it.
+   */
+  function paddedBody(document: unknown, padMiB: number) {
+    const head = new TextEncoder().encode(JSON.stringify(document));
+    const pad = new Uint8Array(MiB).fill(0x20);
+    const stream = { pulls: 0, cancelled: false };
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (stream.pulls > padMiB) controller.close();
+        else controller.enqueue(stream.pulls === 0 ? head : pad);
+        stream.pulls += 1;
+      },
+      cancel() {
+        stream.cancelled = true;
+      },
+    });
+    return {
+      stream,
+      response: new Response(body, { headers: { 'content-type': 'application/json' } }),
+    };
+  }
+
+  it('fails the first load when the export exceeds its 64 MiB budget, without retrying, and stops reading', async () => {
+    const padded = paddedBody(WHC_ROWS, 80);
+    const { hub, service } = makeService({
+      intercept: (call) => (call.kind === 'export' ? padded.response : undefined),
+    });
+    const error = (await service.getHeritage(ctx()).catch((e: unknown) => e)) as McpError;
+    expect(error.data).toMatchObject({ reason: 'snapshot_unavailable', dataset: 'whc001' });
+    const cause = error.cause as McpError;
+    expect(cause.message).toContain('64 MiB');
+    expect(cause.data).toMatchObject({ dataset: 'whc001', retryable: false });
+    expect(hub.callsFor('whc001', 'export')).toHaveLength(1);
+    expect(padded.stream.pulls).toBeLessThan(70);
+    expect(padded.stream.cancelled).toBe(true);
+  });
+
+  it('holds the intangible and biosphere exports to 16 MiB and the World Heritage export to 64 MiB', async () => {
+    const { service } = makeService({
+      intercept: (call) => {
+        if (call.kind !== 'export') return;
+        const rows = { whc001: WHC_ROWS, ich001: ICH_ROWS, mab001: MAB_ROWS }[call.dataset];
+        return paddedBody(rows, 17).response;
+      },
+    });
+    await expect(service.getHeritage(ctx())).resolves.toMatchObject({ dataset: 'whc001' });
+    for (const load of [service.getIntangible(ctx()), service.getBiosphere(ctx())]) {
+      const error = (await load.catch((e: unknown) => e)) as McpError;
+      expect(error.data).toMatchObject({ reason: 'snapshot_unavailable' });
+      expect((error.cause as McpError).message).toContain('16 MiB');
+    }
+  });
+
+  it('fails the load when the metadata document exceeds 1 MiB, before fetching the export', async () => {
+    const { hub, service } = makeService({
+      intercept: (call) =>
+        call.kind === 'meta' ? paddedBody(metaDocument('whc001'), 2).response : undefined,
+    });
+    const error = (await service.getHeritage(ctx()).catch((e: unknown) => e)) as McpError;
+    expect(error.data).toMatchObject({ reason: 'snapshot_unavailable', dataset: 'whc001' });
+    expect((error.cause as McpError).message).toContain('1 MiB');
+    expect(hub.callsFor('whc001', 'meta')).toHaveLength(1);
+    expect(hub.callsFor('whc001', 'export')).toHaveLength(0);
+  });
+
+  it('keeps the previous snapshot and logs a warning when a refresh brings an over-budget export', async () => {
+    const TTL = 5_000;
+    let oversized = false;
+    const { service } = makeService(
+      {
+        intercept: (call) =>
+          oversized && call.kind === 'export' ? paddedBody(WHC_ROWS, 65).response : undefined,
+      },
+      TTL,
+    );
+    const first = await service.getHeritage(ctx());
+    const warning = vi.spyOn(logger, 'warning');
+    oversized = true;
+    clock += TTL;
+    expect(await service.getHeritage(ctx())).toBe(first);
+    await vi.waitFor(() =>
+      expect(
+        warning.mock.calls.some(
+          (c) =>
+            String(c[0]).includes('serving the previous snapshot') &&
+            String(c[0]).includes('64 MiB'),
+        ),
+      ).toBe(true),
+    );
+    expect(await service.getHeritage(ctx())).toBe(first);
+  });
+
+  it('fails the load on a field over its length bound, and keeps the previous snapshot on refresh', async () => {
+    const TTL = 5_000;
+    const overLong = {
+      mab001: [MAB_ROWS[0], { ...MAB_ROWS[1], introduction_en: 'a'.repeat(65_537) }],
+    };
+    const failing = makeService({ rows: overLong });
+    const error = (await failing.service.getBiosphere(ctx()).catch((e: unknown) => e)) as McpError;
+    expect(error.data).toMatchObject({ reason: 'snapshot_unavailable', dataset: 'mab001' });
+    expect((error.cause as McpError).message).toContain('row 1 failed validation');
+    expect((error.cause as McpError).message).toContain('introduction_en');
+
+    const refreshing: HubOptions = {};
+    const { service } = makeService(refreshing, TTL);
+    const first = await service.getBiosphere(ctx());
+    refreshing.rows = overLong;
+    clock += TTL;
+    const warning = vi.spyOn(logger, 'warning');
+    expect(await service.getBiosphere(ctx())).toBe(first);
+    await vi.waitFor(() => expect(warning).toHaveBeenCalled());
+    expect(await service.getBiosphere(ctx())).toBe(first);
   });
 });
 

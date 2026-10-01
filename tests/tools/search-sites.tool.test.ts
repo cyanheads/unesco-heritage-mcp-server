@@ -197,6 +197,17 @@ describe('unesco_search_sites — input normalization and validation', () => {
     expect(error.data?.reason).toBe('invalid_arguments');
   });
 
+  it('rejects a query of more than 16 distinct words, saying to use fewer', async () => {
+    const query = Array.from({ length: 17 }, (_, i) => `w${i}`).join(' ');
+    const error = errorOf(await runToolContract(searchSitesTool, { query } as never));
+    expect(error.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(error.message).toContain('at most 16 distinct words');
+  });
+
+  it('states the distinct-word limit in the query description', () => {
+    expect(searchSitesTool.input.shape.query.description).toContain('at most 16 distinct words');
+  });
+
   it.each([
     [1, 1],
     [20, 20],
@@ -644,6 +655,20 @@ describe('unesco_search_sites — keyword tiers', () => {
   it('does not match a fragment that is not the start of a word', async () => {
     expect((await search({ query: 'fen' })).out.totalCount).toBe(0);
     expect((await search({ query: 'alder' })).out.totalCount).toBe(1);
+  });
+
+  it('answers a word repeated, or folded from repeated compatibility characters, as the single word', async () => {
+    const single = await search({ query: 'a', limit: 50 });
+    expect(single.out.totalCount).toBeGreaterThan(0);
+    const repeated = [
+      Array.from({ length: 100 }, () => 'a').join(' '),
+      withCodePoints(...Array.from({ length: 200 }, () => 0x249c)),
+    ];
+    for (const query of repeated) {
+      const { out } = await search({ query, limit: 50 });
+      expect(out.totalCount).toBe(single.out.totalCount);
+      expect(out.sites).toEqual(single.out.sites);
+    }
   });
 
   it('ranks by tier before name, whatever the alphabetical order', async () => {

@@ -62,10 +62,16 @@ export function yearInput(description: string) {
   return blankAsUnset(z.number().int().min(1900).max(2100).optional()).describe(description);
 }
 
+/** The most distinct words, counted after folding, that a keyword query or filter may hold. */
+export const MAX_QUERY_WORDS = 16;
+
 /**
  * A keyword query or filter (word-prefix AND matching). A non-blank value must
  * hold at least one letter or digit: one that folds to no words would match
  * nothing (search) or everything (filter), so it is rejected, never read as unset.
+ * It may hold at most {@link MAX_QUERY_WORDS} distinct words after folding:
+ * each word is one pass over every record's text, and the character cap alone
+ * does not bound the word count, since NFKD folds one character into a word.
  */
 export function queryInput(description: string, maxLength = 200) {
   return blankAsUnset(
@@ -75,6 +81,9 @@ export function queryInput(description: string, maxLength = 200) {
       .max(maxLength)
       .refine((value) => queryWords(value).length > 0, {
         message: 'Must contain at least one letter or digit; punctuation alone matches nothing.',
+      })
+      .refine((value) => queryWords(value).length <= MAX_QUERY_WORDS, {
+        message: `Use at most ${MAX_QUERY_WORDS} distinct words; punctuation separates words, so remove some words and try again.`,
       })
       .optional(),
   ).describe(description);

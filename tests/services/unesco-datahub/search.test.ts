@@ -63,6 +63,12 @@ describe('foldTier / queryWords', () => {
     expect(queryWords('!!')).toEqual([]);
     expect(queryWords('')).toEqual([]);
   });
+
+  it('drops repeated words after folding, keeping first-seen order', () => {
+    expect(queryWords('town Old TOWN old-town Tówn')).toEqual(['town', 'old']);
+    expect(queryWords(Array.from({ length: 100 }, () => 'x').join(' '))).toEqual(['x']);
+    expect(queryWords(String.fromCodePoint(0x24b3).repeat(200))).toEqual(['x']);
+  });
 });
 
 describe('wordMatches', () => {

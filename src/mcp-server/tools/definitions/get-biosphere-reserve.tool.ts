@@ -10,7 +10,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { renderSources, sourcesField } from '@/mcp-server/shared/enrichment.js';
 import { mabIdInput } from '@/mcp-server/shared/inputs.js';
-import { inline, quoted } from '@/mcp-server/shared/markdown.js';
+import { bareUrl, inline, quoted } from '@/mcp-server/shared/markdown.js';
 import { buildReserveRecord } from '@/services/unesco-datahub/records.js';
 import { foldText } from '@/services/unesco-datahub/search.js';
 import {
@@ -175,8 +175,8 @@ export const getBiosphereReserveTool = tool('unesco_get_biosphere_reserve', {
       '',
       quoted('Socio-economic characteristics', r.socio_economic_characteristics),
       '',
-      `**Website:** ${r.website ?? 'Not available'}`,
-      `**UNESCO page:** ${r.url}`,
+      `**Website:** ${r.website ? bareUrl(r.website) : 'Not available'}`,
+      `**UNESCO page:** ${bareUrl(r.url)}`,
     ];
     return [{ type: 'text', text: lines.join('\n') }];
   },

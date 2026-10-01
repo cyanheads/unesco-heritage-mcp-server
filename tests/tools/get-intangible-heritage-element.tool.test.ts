@@ -392,4 +392,25 @@ describe('unesco_get_intangible_heritage_element — format() parity and text sa
     expect(lines.some((l) => l === '## Not A Heading' || l === '- not a list')).toBe(false);
     expect(text).not.toContain('\r');
   });
+
+  it('prints page and image URLs carrying link syntax with their brackets percent-encoded, keeping the hrefs in structuredContent', async () => {
+    const page = 'https://ich.unesco.org/en/RL/[x](https://example.test/a)';
+    const image = 'https://ich.unesco.org/img/![i](https://example.test/t.gif)';
+    useHub({
+      rows: {
+        ich001: [ichRow({ ich_public_ref: '78', http_url_en: page, main_image_url: image })],
+      },
+    });
+    const { out, text } = await get({ ich_ref: '78' });
+
+    expect(out.url).toBe(page);
+    expect(out.image?.url).toBe(image);
+    expect(text).toContain(
+      '- **URL:** https://ich.unesco.org/en/RL/%5Bx%5D(https://example.test/a)',
+    );
+    expect(text).toContain(
+      '**Image:** https://ich.unesco.org/img/!%5Bi%5D(https://example.test/t.gif)',
+    );
+    expect(text).not.toMatch(/[[\]]/);
+  });
 });

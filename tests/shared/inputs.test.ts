@@ -189,6 +189,39 @@ describe('queryInput', () => {
     expect(parsed(schema, 'x'.repeat(200))).toBe('x'.repeat(200));
     expect(rejects(schema, 'x'.repeat(201))).toBe(true);
   });
+
+  const words = (n: number) => Array.from({ length: n }, (_, i) => `w${i}`).join(' ');
+  /** ⑴ … (U+2474 onward): each folds to a parenthesized number, one distinct word per character. */
+  const parenthesizedNumbers = (n: number) =>
+    String.fromCodePoint(...Array.from({ length: n }, (_, i) => 0x2474 + i));
+
+  it('accepts 16 distinct words and rejects 17 with a message saying to use fewer', () => {
+    expect(parsed(schema, words(16))).toBe(words(16));
+    const result = parseField(schema, words(17));
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.map((i) => i.message).join(' ')).toContain(
+      'at most 16 distinct words',
+    );
+  });
+
+  it('counts a repeated word once, however it is spelled or repeated', () => {
+    const repeated = Array.from({ length: 100 }, () => 'x').join(' ');
+    expect(parsed(schema, repeated)).toBe(repeated);
+    expect(parsed(schema, 'Town TOWN town Tówn')).toBe('Town TOWN town Tówn');
+    const folded = String.fromCodePoint(0x24b3).repeat(200);
+    expect(parsed(schema, folded)).toBe(folded);
+  });
+
+  it('counts words after folding, so a character that expands into a word counts as one', () => {
+    expect(parsed(schema, parenthesizedNumbers(16))).toBe(parenthesizedNumbers(16));
+    expect(rejects(schema, parenthesizedNumbers(17))).toBe(true);
+  });
+
+  it('applies the same cap to a shorter filter', () => {
+    const filter = queryInput('A filter.', 100);
+    expect(parsed(filter, words(16))).toBe(words(16));
+    expect(rejects(filter, words(17))).toBe(true);
+  });
 });
 
 describe('limitInput / cursorInput', () => {

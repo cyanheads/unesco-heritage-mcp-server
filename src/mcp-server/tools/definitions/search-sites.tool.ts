@@ -24,6 +24,7 @@ import {
   foldToEnum,
   isBlank,
   limitInput,
+  MAX_QUERY_WORDS,
   nearInput,
   queryInput,
   regionInput,
@@ -208,7 +209,7 @@ export const searchSitesTool = tool('unesco_search_sites', {
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     query: queryInput(
-      "Keywords; every word must match the start of a word in a site's name (any of six languages), description, or statement of Outstanding Universal Value. Case, accents, and punctuation are ignored, so the query must contain at least one letter or digit; no phrases, operators, or fuzzy matching.",
+      `Keywords; every word must match the start of a word in a site's name (any of six languages), description, or statement of Outstanding Universal Value. Case, accents, and punctuation are ignored, so the query must contain at least one letter or digit and at most ${MAX_QUERY_WORDS} distinct words; no phrases, operators, or fuzzy matching.`,
     ),
     country: countryInput(
       'ISO 3166-1 alpha-2 or alpha-3 code, any case (FR, FRA). Matches every site the country takes part in, transboundary sites included. For a country name, look up its code with unesco_list_reference (topic countries).',

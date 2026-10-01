@@ -24,6 +24,7 @@ import {
   cursorInput,
   foldToEnum,
   limitInput,
+  MAX_QUERY_WORDS,
   nearInput,
   queryInput,
   regionInput,
@@ -194,7 +195,7 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     query: queryInput(
-      "Keywords; every word must match the start of a word in the reserve's name, introduction, or ecological or socio-economic description. Case, accents, and punctuation are ignored, so the query must contain at least one letter or digit; no phrases, operators, or fuzzy matching. For an ecosystem, use a habitat word such as mangrove, wetland, or alpine.",
+      `Keywords; every word must match the start of a word in the reserve's name, introduction, or ecological or socio-economic description. Case, accents, and punctuation are ignored, so the query must contain at least one letter or digit and at most ${MAX_QUERY_WORDS} distinct words; no phrases, operators, or fuzzy matching. For an ecosystem, use a habitat word such as mangrove, wetland, or alpine.`,
     ),
     country: countryInput(
       "ISO 3166-1 alpha-2 or alpha-3 code, any case (FR, FRA). Matches the reserve's country; a transboundary reserve has one row per participating country. For a country name, look up its code with unesco_list_reference (topic countries).",

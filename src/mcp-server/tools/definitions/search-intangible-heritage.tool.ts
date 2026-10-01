@@ -24,6 +24,7 @@ import {
   cursorInput,
   foldToEnum,
   limitInput,
+  MAX_QUERY_WORDS,
   optionalIdNoInput,
   queryInput,
   yearInput,
@@ -170,7 +171,7 @@ export const searchIntangibleHeritageTool = tool('unesco_search_intangible_herit
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     query: queryInput(
-      "Keywords; every word must match the start of a word in an element's English or French name, its UNESCO concept terms, or its description. Case, accents, and punctuation are ignored, so the query must contain at least one letter or digit; no phrases, operators, or fuzzy matching.",
+      `Keywords; every word must match the start of a word in an element's English or French name, its UNESCO concept terms, or its description. Case, accents, and punctuation are ignored, so the query must contain at least one letter or digit and at most ${MAX_QUERY_WORDS} distinct words; no phrases, operators, or fuzzy matching.`,
     ),
     country: countryInput(
       'ISO 3166-1 alpha-2 or alpha-3 code, any case (FR, FRA). Matches every element the country shares, multinational elements included. For a country name, look up its code with unesco_list_reference (topic countries).',

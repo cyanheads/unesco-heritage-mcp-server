@@ -10,7 +10,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { countOf, renderSources, sourcesField } from '@/mcp-server/shared/enrichment.js';
 import { blankAsUnset, idNoInput } from '@/mcp-server/shared/inputs.js';
-import { inline, quoted } from '@/mcp-server/shared/markdown.js';
+import { bareUrl, inline, quoted } from '@/mcp-server/shared/markdown.js';
 import { buildSiteRecord } from '@/services/unesco-datahub/records.js';
 import {
   getUnescoDataHubService,
@@ -204,7 +204,7 @@ export const getSiteTool = tool('unesco_get_site', {
       `- **Danger:** ${r.in_danger ? `In Danger${r.danger_listed_year !== undefined ? ` since ${r.danger_listed_year}` : ''}` : 'Not in Danger'}`,
       `- **Area:** ${r.area_hectares !== undefined ? `${r.area_hectares} ha` : 'Not available'}`,
       `- **Coordinates:** ${r.latitude !== undefined && r.longitude !== undefined ? `${r.latitude}, ${r.longitude}` : 'Not available'}`,
-      `- **URL:** ${r.url}`,
+      `- **URL:** ${bareUrl(r.url)}`,
       '',
       '**Criteria:**',
       ...(r.criteria.length > 0
@@ -236,7 +236,7 @@ export const getSiteTool = tool('unesco_get_site', {
     }
     if (r.image) {
       lines.push(
-        `**Image:** ${r.image.url}`,
+        `**Image:** ${bareUrl(r.image.url)}`,
         ...(r.image.copyright ? [`© ${inline(r.image.copyright)}`] : []),
         ...(r.image.author ? [`Photo: ${inline(r.image.author)}`] : []),
       );

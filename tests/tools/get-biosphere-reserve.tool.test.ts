@@ -515,4 +515,21 @@ describe('unesco_get_biosphere_reserve — format() parity and text safety', () 
     expect(out.website).toBe('https://reserve.example.test/x#%20Injected');
     expect(out.url).toBe('https://www.unesco.org/en/mab/y##%20Injected');
   });
+
+  it('prints a website and page URL carrying link syntax with their brackets percent-encoded, keeping the hrefs in structuredContent', async () => {
+    const website = 'https://reserve.example.test/![x](https://example.test/t.gif)';
+    const url = 'https://www.unesco.org/en/mab/p?ref=[y](https://example.test/a)';
+    useHub({ rows: { mab001: [mabRow({ mab_id: 'ZZLink2000', website, url })] } });
+    const { out, text } = await get({ mab_id: 'ZZLink2000' });
+
+    expect(out.website).toBe(website);
+    expect(out.url).toBe(url);
+    expect(text).toContain(
+      '**Website:** https://reserve.example.test/!%5Bx%5D(https://example.test/t.gif)',
+    );
+    expect(text).toContain(
+      '**UNESCO page:** https://www.unesco.org/en/mab/p?ref=%5By%5D(https://example.test/a)',
+    );
+    expect(text).not.toMatch(/[[\]]/);
+  });
 });
