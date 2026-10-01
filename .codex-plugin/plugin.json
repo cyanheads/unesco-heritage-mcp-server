@@ -1,23 +1,31 @@
 {
   "name": "unesco-heritage-mcp-server",
   "version": "0.1.0",
-  "description": "UNESCO World Heritage sites and Man and the Biosphere reserves: search sites, danger listings, inscription criteria, and biosphere reserves.",
+  "description": "Search UNESCO World Heritage sites, intangible heritage, and Man and the Biosphere reserves.",
   "author": {
     "name": "cyanheads",
     "email": "casey@caseyjhand.com",
     "url": "https://github.com/cyanheads"
   },
-  "homepage": "https://github.com/cyanheads/unesco-heritage-mcp-server",
+  "homepage": "https://github.com/cyanheads/unesco-heritage-mcp-server#readme",
   "repository": "https://github.com/cyanheads/unesco-heritage-mcp-server",
   "license": "Apache-2.0",
-  "keywords": ["mcp", "mcp-server", "model-context-protocol", "unesco", "world-heritage", "biosphere-reserves"],
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "unesco",
+    "world-heritage",
+    "intangible-cultural-heritage",
+    "biosphere-reserves"
+  ],
   "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
     "displayName": "unesco-heritage-mcp-server",
-    "shortDescription": "Search UNESCO World Heritage sites, danger listings, and biosphere reserves.",
-    "longDescription": "Read-only access to the UNESCO Datahub's World Heritage List and Man and the Biosphere Programme datasets. Search 1,273 cultural, natural, and mixed sites by country, category, inscription year, or criteria (i through x), pull a site's Outstanding Universal Value justification and coordinates, list the sites on the List of World Heritage in Danger, and search the 797 biosphere reserves by country, regional network, or ecological description. No API key required.",
+    "shortDescription": "Search UNESCO World Heritage sites, intangible heritage, and Man and the Biosphere reserves.",
+    "longDescription": "Read-only access to three UNESCO Data Hub datasets: the World Heritage List, the Intangible Cultural Heritage lists, and the World Network of Biosphere Reserves from the Man and the Biosphere Programme. Search World Heritage sites by keyword, country, category, region, inscription criteria (i)–(x), inscription years, or distance from a point, review the List of World Heritage in Danger, and read a site's statement of Outstanding Universal Value, criteria, and component parts. Find intangible heritage elements by list, country, or the World Heritage site UNESCO links them to, and search biosphere reserves by ecosystem keyword, regional network, or location. A reference tool turns country names into ISO codes and decodes the vocabulary the search tools accept. Every response carries the dataset's data date and CC BY-SA 4.0 attribution. No API key required.",
     "developerName": "cyanheads",
-    "category": "Research",
+    "category": "research",
     "capabilities": ["Read"],
     "websiteURL": "https://github.com/cyanheads/unesco-heritage-mcp-server",
     "defaultPrompt": []

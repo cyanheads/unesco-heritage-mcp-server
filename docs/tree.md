@@ -1,6 +1,6 @@
 # unesco-heritage-mcp-server - Directory Structure
 
-Generated on: 2026-09-30 04:10:40
+Generated on: 2026-10-01 01:59:05
 
 ```text
 unesco-heritage-mcp-server/
@@ -24,6 +24,7 @@ unesco-heritage-mcp-server/
 │   ├── extensions.json
 │   └── settings.json
 ├── changelog/
+│   ├── 0.1.x/
 │   └── template.md
 ├── docs/
 │   └── design.md
@@ -173,6 +174,7 @@ unesco-heritage-mcp-server/
 │   │   ├── rows.ts
 │   │   └── tool.ts
 │   ├── fuzz/
+│   │   └── definitions.fuzz.test.ts
 │   ├── integration/
 │   ├── prompts/
 │   ├── resources/
@@ -194,6 +196,7 @@ unesco-heritage-mcp-server/
 │   │   └── markdown.test.ts
 │   ├── smoke/
 │   └── tools/
+│       ├── error-severity.test.ts
 │       ├── get-biosphere-reserve.tool.test.ts
 │       ├── get-intangible-heritage-element.tool.test.ts
 │       ├── get-site.tool.test.ts
@@ -210,12 +213,14 @@ unesco-heritage-mcp-server/
 ├── biome.json
 ├── bun.lock
 ├── bunfig.toml
+├── CHANGELOG.md
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile
 ├── LICENSE
 ├── manifest.json
 ├── package.json
+├── README.md
 ├── server.json
 ├── tsconfig.build.json
 ├── tsconfig.json

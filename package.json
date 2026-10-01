@@ -2,7 +2,7 @@
   "name": "@cyanheads/unesco-heritage-mcp-server",
   "version": "0.1.0",
   "mcpName": "io.github.cyanheads/unesco-heritage-mcp-server",
-  "description": "UNESCO World Heritage sites and Man and the Biosphere reserves: search sites, danger listings, inscription criteria, and biosphere reserves.",
+  "description": "Search UNESCO World Heritage sites, intangible heritage, and Man and the Biosphere reserves via MCP. STDIO or Streamable HTTP.",
   "author": "Casey Hand <casey@caseyjhand.com> (https://caseyjhand.com)",
   "funding": [
     {
@@ -48,6 +48,7 @@
     "changelog:build": "bun run scripts/build-changelog.ts",
     "changelog:check": "bun run scripts/build-changelog.ts --check",
     "release:github": "bun run scripts/release-github.ts",
+    "publish-mcp": "mcp-publisher login github -token \"$(security find-generic-password -a \"$USER\" -s mcp-publisher-github-pat -w)\" && mcp-publisher publish",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "start": "node dist/index.js",
@@ -58,9 +59,18 @@
     "mcp",
     "mcp-server",
     "model-context-protocol",
+    "typescript",
+    "bun",
+    "stdio",
+    "streamable-http",
     "unesco",
     "world-heritage",
-    "biosphere-reserves"
+    "intangible-cultural-heritage",
+    "biosphere-reserves",
+    "man-and-the-biosphere",
+    "cultural-heritage",
+    "natural-heritage",
+    "open-data"
   ],
   "repository": {
     "type": "git",

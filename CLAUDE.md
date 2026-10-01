@@ -9,18 +9,30 @@
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
 
+> **Read the design next:** `docs/design.md` records the tool surface, the shared input conventions, the snapshot lifecycle, the upstream data quirks the loader repairs, and the numbered design decisions. Update it when the surface or a decision changes.
+
 ---
 
-## First Session
+## Domain
 
-This project was just scaffolded with `bunx @cyanheads/mcp-ts-core init`. You're holding a production-grade MCP framework with the hard parts already solved — error handling, telemetry, auth, transport, validation, lifecycle. What's missing is the **domain**. Your job: design the tool, resource, and service surface with the user, then implement it as small pure handlers that throw — the framework catches, classifies, and instruments the rest. Design before code; the user's first messages set direction, so wait for them before scaffolding definitions.
+Seven read-only tools and three resources over three UNESCO Data Hub datasets (`data.unesco.org`, Explore API v2.1), all keyless and CC BY-SA 4.0:
 
-> **Remove this section** from CLAUDE.md / AGENTS.md after completing these steps. The skills and conventions below remain — this block is one-time onboarding only.
+| Dataset | Content | Record key | Tools |
+|:--------|:--------|:-----------|:------|
+| `whc001` | World Heritage List | `id_no` | `unesco_search_sites`, `unesco_get_site` |
+| `ich001` | Intangible Cultural Heritage lists | `ich_ref` | `unesco_search_intangible_heritage`, `unesco_get_intangible_heritage_element` |
+| `mab001` | World Network of Biosphere Reserves | `mab_id` | `unesco_search_biosphere_reserves`, `unesco_get_biosphere_reserve` |
 
-1. **Get your bearings.** Take stock of the project tree, the skills in `framework-skills/`, and the tools/MCP servers available. Light tool use is fine for context-building — you're mapping the territory, not committing yet.
-2. **Read the framework docs** — `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` (builders, Context, errors, exports, conventions)
-3. **Run the `setup` skill** — read `framework-skills/setup/SKILL.md` and follow its checklist (project orientation, agent protocol file selection, echo definition cleanup, skill sync)
-4. **Design the server** — read `framework-skills/design-mcp-server/SKILL.md` and work through it with the user to map the domain into tools, resources, and services before scaffolding
+`unesco_list_reference` decodes the vocabulary (criteria, countries, regions, intangible lists, MAB networks) and reports dataset coverage. Each resource (`unesco://site/{id_no}`, `unesco://intangible-heritage/{ich_ref}`, `unesco://biosphere-reserve/{mab_id}`) mirrors a get tool. There are no prompts.
+
+`UnescoDataHubService` loads each dataset lazily as an in-memory snapshot (one metadata GET plus one `exports/json` GET), refreshes it after 24 h with stale-while-revalidate, and keeps the previous snapshot when a refresh fails. Every tool call is answered from the snapshot: filtering, keyword tiers, facets, and distance search are local. There are no server-specific environment variables: the TTL, deadlines, and pacer limits are constants.
+
+Conventions every definition follows:
+
+- **Attribution first.** Every data tool declares the required `sources` enrichment field (`sourcesField` from `src/mcp-server/shared/enrichment.ts`) and writes it before any branch; resources embed `sources` in the JSON payload.
+- **Upstream text is data.** Names, descriptions, and statements of Outstanding Universal Value go through `inline()` / `quote()` / `quoted()` / `cell()` from `src/mcp-server/shared/markdown.ts` before interpolation in `format()`, and upstream URLs through `bareUrl()`. Never interpolate raw upstream text.
+- **Inputs come from `src/mcp-server/shared/inputs.ts`.** Every optional scalar is wrapped in `blankAsUnset`; country, region, year, query, pagination, `near`, and record-id inputs use the shared builders so normalization stays identical across tools.
+- **No fabrication.** Missing coordinates, areas, and images render as `Not available`; MAB areas and populations pass through as recorded; criterion (vi) is marked inferred wherever it appears.
 
 ---
 
@@ -59,155 +71,170 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 
 ### Tool
 
+Abridged from `src/mcp-server/tools/definitions/get-intangible-heritage-element.tool.ts`:
+
 ```ts
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { renderSources, sourcesField } from '@/mcp-server/shared/enrichment.js';
+import { ichRefInput } from '@/mcp-server/shared/inputs.js';
+import { inline, quoted } from '@/mcp-server/shared/markdown.js';
+import { buildElementRecord } from '@/services/unesco-datahub/records.js';
+import {
+  getUnescoDataHubService,
+  sourceOf,
+} from '@/services/unesco-datahub/unesco-datahub-service.js';
 
-export const searchItems = tool('search_items', {
-  description: 'Search inventory items by query.',
-  annotations: { readOnlyHint: true },
+export const getIntangibleHeritageElementTool = tool('unesco_get_intangible_heritage_element', {
+  title: 'Get intangible heritage element',
+  description: "Fetch one Intangible Cultural Heritage element's full record by ich_ref: …",
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
-    query: z.string().describe('Search terms'),
-    limit: z.number().int().min(1).max(100).default(10).describe('Max results (1–100)'),
+    ich_ref: ichRefInput("The element's ich_ref, from unesco_search_intangible_heritage. …"),
   }),
   output: z.object({
-    items: z.array(z.object({
-      id: z.string().describe('Item ID'),
-      name: z.string().describe('Item name'),
-    })).describe('Matching items'),
+    ich_ref: z.string().describe('Intangible heritage element reference (ich_ref).'),
+    name: z.string().describe('English name.'),
+    description: z.string().describe("UNESCO's description of the element."),
+    // … list, countries, concepts, world_heritage_sites, url, image
   }),
-  auth: ['inventory:read'],
+  enrichment: { sources: sourcesField },
+  enrichmentTrailer: { sources: { render: renderSources } },
+  errors: [
+    {
+      reason: 'element_not_found',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'No record carries this ich_ref',
+      severity: 'notice',
+      recovery:
+        "Find the element's ich_ref with unesco_search_intangible_heritage (search by name), then call unesco_get_intangible_heritage_element again.",
+    },
+    {
+      reason: 'snapshot_unavailable',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'No intangible heritage snapshot has loaded yet and the Data Hub is unreachable',
+      retryable: true,
+      thrownBy: 'service',
+      recovery: 'The UNESCO Data Hub could not be reached to load the Intangible Heritage List; wait until …',
+    },
+  ],
 
   async handler(input, ctx) {
-    const items = await findItems(input.query, input.limit);
-    ctx.log.info('Search completed', { query: input.query, count: items.length });
-    return { items };
+    const intangible = await getUnescoDataHubService().getIntangible(ctx);
+    ctx.enrich({ sources: [sourceOf(intangible)] }); // attribution first, before any branch
+    const element = intangible.byId.get(input.ich_ref);
+    if (!element) {
+      throw ctx.fail(
+        'element_not_found',
+        `No intangible heritage element has ich_ref ${input.ich_ref}.`,
+        { ich_ref: input.ich_ref },
+      );
+    }
+    ctx.log.info('Intangible heritage element fetched', { ich_ref: element.ich_ref });
+    return buildElementRecord(element);
   },
 
-  // format() populates content[] — the markdown twin of structuredContent.
-  // Different clients read different surfaces (Claude Code → structuredContent,
-  // Claude Desktop → content[]); both must carry the same data.
-  // Enforced at lint time: every field in `output` must appear in the rendered text.
-  format: (result) => [{
+  // format() is the content[] twin of structuredContent: every output field appears,
+  // and upstream text is flattened (inline) or blockquoted (quoted), never interpolated raw.
+  format: (r) => [{
     type: 'text',
-    text: result.items.map(i => `**${i.id}**: ${i.name}`).join('\n'),
+    text: [`## ${inline(r.name)} (ich_ref ${r.ich_ref})`, '', quoted('Description', r.description)].join('\n'),
   }],
 });
 ```
 
+The search tools add the page enrichment (`pageEnrichment`: `totalCount`, `truncated`, `shown`, `cap`, `notice`) plus `applied_filters` and `facets`, compose the zero-hit and continuation notice with `composePageNotice`, and page with `makeCursor` / `readCursor`, whose fingerprint ties a cursor to its filters, sort, and snapshot date. `docs/design.md` § Shared enrichment gives the write order.
+
 ### Resource
+
+Abridged from `src/mcp-server/resources/definitions/site.resource.ts`. A resource reuses its get tool's record builder and embeds `sources`, since resources carry no enrichment block:
 
 ```ts
 import { resource, z } from '@cyanheads/mcp-ts-core';
-import { notFound } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { idNoInput } from '@/mcp-server/shared/inputs.js';
+import { buildSiteRecord } from '@/services/unesco-datahub/records.js';
+import {
+  getUnescoDataHubService,
+  sourceOf,
+} from '@/services/unesco-datahub/unesco-datahub-service.js';
 
-export const itemData = resource('inventory://{itemId}', {
-  description: 'Fetch an inventory item by ID.',
-  params: z.object({ itemId: z.string().describe('Item identifier') }),
-  auth: ['inventory:read'],
-  async handler(params, ctx) {
-    const item = await ctx.state.get(`item/${params.itemId}`);
-    if (!item) throw notFound(`Item ${params.itemId} not found`, { itemId: params.itemId });
-    return item;
-  },
-});
-```
-
-### Prompt
-
-```ts
-import { prompt, z } from '@cyanheads/mcp-ts-core';
-
-export const reviewCode = prompt('review_code', {
-  description: 'Review code for issues and best practices.',
-  args: z.object({
-    code: z.string().describe('Code to review'),
-    language: z.string().optional().describe('Programming language'),
+export const siteResource = resource('unesco://site/{id_no}', {
+  name: 'unesco_site',
+  title: 'World Heritage site record',
+  description: "One World Heritage site's full record by id_no, as unesco_get_site returns it …",
+  mimeType: 'application/json',
+  cacheHint: { ttlMs: 3_600_000, cacheScope: 'public' },
+  params: z.object({
+    id_no: idNoInput("The site's World Heritage id_no, from unesco_search_sites."),
   }),
-  generate: (args) => [
-    { role: 'user', content: { type: 'text', text: `Review this ${args.language ?? ''} code:\n${args.code}` } },
+  errors: [
+    {
+      reason: 'site_not_found',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'No record carries this id_no',
+      recovery:
+        "Find the site's id_no with unesco_search_sites (search by name), then read unesco://site/{id_no} with it or call unesco_get_site.",
+    },
+    // … snapshot_unavailable
   ],
+
+  async handler(params, ctx) {
+    const heritage = await getUnescoDataHubService().getHeritage(ctx);
+    const site = heritage.byId.get(params.id_no);
+    if (!site) {
+      throw ctx.fail('site_not_found', `No World Heritage site has id_no ${params.id_no}.`, {
+        id_no: params.id_no,
+      });
+    }
+    return { ...buildSiteRecord(site, 20), sources: [sourceOf(heritage)] };
+  },
 });
 ```
 
 ### Server config
 
-```ts
-// src/config/server-config.ts — lazy-parsed, separate from framework config
-import { z } from '@cyanheads/mcp-ts-core';
-import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
+None. The server reads no environment variables of its own and has no `src/config/`. Snapshot TTL, load deadlines, retry policy, and pacer limits are constants in `UnescoDataHubService`; its constructor options (`get`, `now`, `ttlMs`) exist for tests. If a server-specific variable is ever added, follow the `api-config` skill (`parseEnvConfig`, and `z.stringbool()` for booleans) and add it to `.env.example`, `server.json`, `manifest.json`, and both plugin manifests together.
 
-const ServerConfigSchema = z.object({
-  apiKey: z.string().describe('External API key'),
-  maxResults: z.coerce.number().default(100),
-  verboseLogging: z.stringbool().default(false).describe('Enable verbose logging'),
-});
+### Server identity, instructions, and lifecycle
 
-let _config: z.infer<typeof ServerConfigSchema> | undefined;
-export function getServerConfig() {
-  _config ??= parseEnvConfig(ServerConfigSchema, {
-    apiKey: 'MY_API_KEY',
-    maxResults: 'MY_MAX_RESULTS',
-    verboseLogging: 'MY_VERBOSE_LOGGING',
-  });
-  return _config;
-}
-```
-
-`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`MY_API_KEY`) not the path (`apiKey`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
-
-For env booleans use `z.stringbool()`, never `z.coerce.boolean()` — `Boolean("false")` is `true`, so a coerced flag can't be disabled through the environment. `z.stringbool()` parses `true/false/1/0/yes/no/on/off` and rejects anything else, so `=false` actually disables.
-
-### Server identity and instructions
-
-`createApp()` accepts optional identity fields forwarded to the SDK's `initialize` response and the server manifest (`/.well-known/mcp.json`):
+`src/index.ts` (imports and instructions abridged):
 
 ```ts
 await createApp({
-  name: 'my-mcp-server',
-  title: 'My Server',                         // human-readable display name
-  websiteUrl: 'https://github.com/owner/repo', // canonical homepage URL
-  description: 'One-line description.',        // wins over MCP_SERVER_DESCRIPTION
-  icons: [{ src: 'https://example.com/icon.png', sizes: ['48x48'], mimeType: 'image/png' }],
-  instructions: 'Use shortcut alpha for the most common case.', // session-level context
+  name: 'unesco-heritage-mcp-server',
+  title: 'unesco-heritage-mcp-server',
+  instructions: 'Three UNESCO datasets from the UNESCO Data Hub (data.unesco.org), read-only and keyless: …',
+  tools: [searchSitesTool, getSiteTool, /* … */ listReferenceTool],
+  resources: [siteResource, intangibleHeritageElementResource, biosphereReserveResource],
+  setup() {
+    initUnescoDataHubService();
+  },
+  teardown() {
+    getUnescoDataHubService().dispose();
+  },
 });
 ```
 
-`instructions` is optional server-level orientation, sent on every `initialize` as session-level context. Use it for deployment guidance (connection aliases, regional notes, scope hints) instead of repeating the same context across tool descriptions. Client adoption is uneven, but there's no downside when set.
+Identity is `name` + `title`, both the unscoped package name (`lint:packaging` enforces the match); `description` comes from `package.json`. `instructions` (kept under 2,048 characters) carries the cross-tool workflow, so update it with the tool names whenever the surface changes. `teardown()` disposes the service's pacer.
 
-### Session posture and shutdown
-
-Two more `createApp()` options shape how the server runs rather than how it presents itself:
-
-```ts
-await createApp({
-  sessionMode: 'stateless',          // or { default: 'stateful', require: 'stateful' }
-  setup(core) { startMyWatcher(core.config); },
-  async teardown() { await stopMyWatcher(); },
-});
-```
-
-`sessionMode` declares the HTTP session posture in `src/` instead of leaving it to a deployment's `MCP_SESSION_MODE`, which still wins whenever it carries a meaningful value (an empty string and an unsubstituted `${…}` placeholder read as unset and fall through to the option). Add `require: 'stateful'` when a tool asks the caller for input mid-handler via `ctx.requestInput`: startup then fails with a `ConfigurationError` rather than serving a mode in which a 2025-era client can never answer the prompt. Stdio is never refused.
-
-`teardown(core)` is the `setup()` counterpart — release a watcher, socket, or non-`unref()`'d timer there. It runs after the transport stops and before the logger closes, on every shutdown path, and a signal-triggered shutdown then exits the process explicitly (0, or 1 if a step never settles within the framework's 10 s ceiling).
+No tool calls `ctx.requestInput`, so `createApp()` declares no `sessionMode`; `.env.example` and the Dockerfile set `MCP_SESSION_MODE=stateless`.
 
 ---
 
 ## Context
 
-Handlers receive a unified `ctx` object. Key properties:
+Handlers receive a unified `ctx` object. The properties this server uses:
 
 | Property | Description |
 |:---------|:------------|
 | `ctx.log` | Request-scoped logger — `.debug()`, `.info()`, `.notice()`, `.warning()`, `.error()`. Auto-correlates requestId, traceId, tenantId. Dual-sink: Pino **and** `notifications/message` to the client, so treat it as client-visible. |
-| `ctx.state` | Tenant-scoped KV — `.get(key)`, `.set(key, value, { ttl? })`, `.delete(key)`, `.getMany(keys)`, `.list(prefix, { cursor, limit })`. Accepts any JSON-serializable value; reads return its JSON form (a `Date` comes back as an ISO string). |
-| `ctx.requestInput` | Suspend and ask the caller for more input — `return ctx.requestInput({ inputRequests: { key: inputRequired.elicit({ message, requestedSchema }) } })`. Never returns; the handler is re-entered with the answers. Always present. |
-| `ctx.inputs` | The request's responses — `.accepted(key, schema)`, `.view(key)`, `.state()`, `.dropped` — limited to what the client declared (`elicitation` and its form/url modes, `sampling`, `roots`). Client-supplied: a consent gate trusts only a `ctx.state` record it stored when it asked, bound to the operation, caller, and target (see the `api-context` skill). |
-| `ctx.clientCapabilities` | What the client declared for this request, `undefined` when no view exists. Decides whether to ask for optional context (e.g. roots); never a reason to skip a consent prompt. |
-| `ctx.enrich` | Success-path agent context (empty-result notices, query echo, pagination totals) — `ctx.enrich(...)` or `.notice()` / `.total()` / `.echo()` / `.truncated()`. Reaches `structuredContent` and `content[]`; lands only when the definition declares an `enrichment` block (no-op otherwise). |
-| `ctx.content` | Non-text content blocks — `.image(data, mimeType)`, `.audio(data, mimeType)`, or `ctx.content(block)` for a raw block. Prepended to `content[]` after `format()`; never enters `structuredContent`. |
-| `ctx.signal` | `AbortSignal` for cancellation. |
+| `ctx.enrich` | Success-path agent context — `ctx.enrich(...)` or `.notice()` / `.total()` / `.truncated()`. Reaches `structuredContent` and `content[]`; lands only when the definition declares an `enrichment` block (no-op otherwise). Carries `sources` on every data tool, plus the page fields, `applied_filters`, and `facets` on the search tools. |
+| `ctx.fail` | Throws a declared error-contract entry by `reason` (see Errors). |
+| `ctx.signal` | `AbortSignal` for cancellation. The service races a shared snapshot load against it, so a cancelled caller stops waiting without aborting the load. |
 | `ctx.requestId` | Request ID — the one every log record of the call carries and its error envelope returns as `data.requestId`. |
-| `ctx.tenantId` | Tenant ID from JWT; `'default'` for stdio or HTTP with auth off. |
+
+No handler uses `ctx.state`, `ctx.requestInput`, `ctx.inputs`, or `ctx.content`: the snapshots live in the service, not in tenant storage. Read the `api-context` skill before adding any of them.
 
 ---
 
@@ -259,20 +286,28 @@ See framework CLAUDE.md and the `api-errors` skill for the full auto-classificat
 
 ```text
 src/
-  index.ts                              # createApp() entry point
-  config/
-    server-config.ts                    # Server-specific env vars (Zod schema)
+  index.ts                              # createApp() entry point, server instructions, service lifecycle
   services/
-    [domain]/
-      [domain]-service.ts               # Domain service (init/accessor pattern)
-      types.ts                          # Domain types
+    unesco-datahub/
+      unesco-datahub-service.ts         # Snapshot lifecycle per dataset: load, TTL, single-flight, backoff, pacer
+      rows.ts                           # Strict export-row schemas + edge parsers (text cleanup, criteria, components)
+      records.ts                        # Full-record builders shared by the get tools and resources
+      search.ts                         # Folding, word-prefix tiers, filters, facets, haversine, sorts, cursors
+      iso3166.ts                        # ISO 3166-1 alpha-2 ↔ alpha-3 table, country normalizer, display names
+      vocabulary.ts                     # Regions, categories, criteria, lists, MAB networks, titles, license
+      types.ts                          # Domain and snapshot types
   mcp-server/
-    tools/definitions/
-      [tool-name].tool.ts               # Tool definitions
-    resources/definitions/
-      [resource-name].resource.ts       # Resource definitions
-    prompts/definitions/
-      [prompt-name].prompt.ts           # Prompt definitions
+    shared/
+      inputs.ts                         # blankAsUnset + shared input builders and record-id normalizers
+      enrichment.ts                     # sources field/trailer, page enrichment, composed page notice
+      markdown.ts                       # inline / cell / quote / quoted / bareUrl for upstream text in format()
+    tools/definitions/                  # 7 tool definitions (*.tool.ts)
+    resources/definitions/              # 3 resource definitions (*.resource.ts)
+tests/
+  fixtures/                             # Synthetic Data Hub rows + test harness helpers
+  services/ shared/ tools/ resources/   # Tests mirroring src/
+docs/
+  design.md                             # Surface, conventions, lifecycle, data quirks, decisions
 ```
 
 ---
@@ -281,10 +316,12 @@ src/
 
 | What | Convention | Example |
 |:-----|:-----------|:--------|
-| Files | kebab-case with suffix | `search-docs.tool.ts` |
-| Tool/resource/prompt names | snake_case | `search_docs` |
-| Directories | kebab-case | `src/services/doc-search/` |
-| Descriptions | Single string or template literal, no `+` concatenation | `'Search items by query and filter.'` |
+| Files | kebab-case with suffix | `search-sites.tool.ts` |
+| Tool names | snake_case, `unesco_` prefix, verb first | `unesco_search_sites` |
+| Resource names | snake_case, `unesco_` prefix; URIs under `unesco://` | `unesco_site` → `unesco://site/{id_no}` |
+| Input and output fields | snake_case | `inscribed_from`, `data_as_of` |
+| Directories | kebab-case | `src/services/unesco-datahub/` |
+| Descriptions | Single string or template literal, no `+` concatenation | `'Search the UNESCO World Heritage List by keyword, …'` |
 
 ---
 
@@ -357,11 +394,15 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run format` | Auto-fix formatting (safe fixes only) |
 | `bun run format:unsafe` | Also apply Biome's unsafe autofixes — review the diff; they can change behavior |
 | `bun run test` | Run tests (Vitest — use `bun run test`, not `bun test`) |
+| `bun run test:coverage` | Run tests with coverage |
+| `bun run start` | Run the built server (`node dist/index.js`, transport from the environment) |
 | `bun run start:stdio` | Production mode (stdio) |
 | `bun run start:http` | Production mode (HTTP) |
 | `bun run changelog:build` | Regenerate `CHANGELOG.md` from `changelog/*.md` |
 | `bun run changelog:check` | Verify `CHANGELOG.md` is in sync (used by devcheck) |
 | `bun run bundle` | Build, pack, and clean a `.mcpb` for one-click Claude Desktop install |
+| `bun run release:github` | Create the GitHub Release from an annotated tag and attach the `.mcpb` bundle |
+| `bun run publish-mcp` | Log in to the MCP Registry and publish `server.json` (used by `release-and-publish`) |
 
 **CI is one file.** `.github/workflows/codeql.yml` (scaffolded) is the only GitHub Actions workflow: CodeQL is GitHub-owned end to end, and the file runs only while the repo's CodeQL *default setup* is turned off. Verification — `devcheck`, tests, the release gates — runs locally; don't add a workflow that re-runs it.
 
@@ -428,13 +469,16 @@ import { getMyService } from '@/services/my-domain/my-service.js';
 - [ ] Zod schemas: all fields have `.describe()`, only JSON-Schema-serializable types (no `z.custom()`, `z.date()`, `z.transform()`, `z.bigint()`, `z.symbol()`, `z.void()`, `z.map()`, `z.set()`, `z.function()`, `z.nan()`)
 - [ ] Optional nested objects: handler guards for empty inner values from form-based clients (`if (input.obj?.field && ...)`, not just `if (input.obj)`). When regex/length constraints matter, use `z.union([z.literal(''), z.string().regex(...).describe(...)])` — literal variants are exempt from `describe-on-fields`.
 - [ ] JSDoc `@fileoverview` + `@module` on every file
-- [ ] `ctx.log` for logging, `ctx.state` for storage
-- [ ] Handlers throw on failure — error factories or plain `Error`, no try/catch
+- [ ] `ctx.log` for logging; no `ctx.state` (snapshots live in the service)
+- [ ] Handlers throw on failure — `ctx.fail` against a declared `errors[]` entry, or error factories; no try/catch
 - [ ] `format()` renders all data the LLM needs — different clients forward different surfaces (Claude Code → `structuredContent`, Claude Desktop → `content[]`); both must carry the same data
-- [ ] If wrapping external API: raw/domain/output schemas reviewed against real upstream sparsity/nullability before finalizing required vs optional fields
-- [ ] If wrapping external API: normalization and `format()` preserve uncertainty; do not fabricate facts from missing upstream data
-- [ ] If wrapping external API: tests include at least one sparse payload case with omitted upstream fields
-- [ ] Registered in `createApp()` arrays (directly or via barrel exports)
+- [ ] Every data tool declares `sources` and writes it first; resources embed `sources` in the payload
+- [ ] Upstream text reaches `format()` only through `inline` / `cell` / `quote` / `quoted` (`src/mcp-server/shared/markdown.ts`)
+- [ ] Inputs built from `src/mcp-server/shared/inputs.ts`; every optional scalar is blank-as-unset
+- [ ] New export fields: added to the strict row schema in `rows.ts` and the export `select` list, reviewed against real upstream sparsity/nullability, never fabricated when missing
+- [ ] Tests run on synthetic fixtures in `tests/fixtures/`, including at least one sparse row with omitted upstream fields
+- [ ] Registered in the `createApp()` arrays in `src/index.ts`; server `instructions` updated when a tool name or workflow changes
+- [ ] `docs/design.md` updated when the surface or a design decision changes
 - [ ] Tests use `createMockContext()` from `@cyanheads/mcp-ts-core/testing`
 - [ ] `.codex-plugin/plugin.json` populated — `name`, `version`, `description`, `repository`, `license` from `package.json`; `interface.displayName` = the unscoped repo name (never the npm scope — `lint:packaging` enforces this); `interface.shortDescription` from `package.json` description
 - [ ] `.codex-plugin/mcp.json` updated — server name key is the unscoped repo name; every user-supplied variable (API key, contact email, instance URL) is listed in `env_vars` so Codex forwards it from the user's environment. Never write `"KEY": ""` into `env` — an empty value replaces the user's exported key and is read as unset

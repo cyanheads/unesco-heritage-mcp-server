@@ -1,7 +1,8 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.cyanheads/unesco-heritage-mcp-server",
-  "description": "Search UNESCO World Heritage sites, danger listings, and Man and the Biosphere reserves.",
+  "title": "unesco-heritage-mcp-server",
+  "description": "Search UNESCO World Heritage sites, intangible heritage, and Man and the Biosphere reserves.",
   "repository": {
     "url": "https://github.com/cyanheads/unesco-heritage-mcp-server",
     "source": "github"
