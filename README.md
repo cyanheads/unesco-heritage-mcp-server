@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>unesco-heritage-mcp-server</h1>
+  <h1>@cyanheads/unesco-heritage-mcp-server</h1>
   <p><b>Search UNESCO World Heritage sites, intangible heritage, and Man and the Biosphere reserves via MCP. STDIO or Streamable HTTP.</b>
   <div>7 Tools • 3 Resources</div>
   </p>
