@@ -14,6 +14,7 @@ import { encodeCursor } from '@cyanheads/mcp-ts-core/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchSitesTool } from '@/mcp-server/tools/definitions/search-sites.tool.js';
 import { makeCursor, readCursor } from '@/services/unesco-datahub/search.js';
+import { declaredRecovery } from '../fixtures/contract.js';
 import { DATA_AS_OF, type HubOptions, httpFailure } from '../fixtures/hub.js';
 import { WHC_ROWS, whcRow } from '../fixtures/rows.js';
 import {
@@ -290,6 +291,17 @@ describe('unesco_search_sites — declared errors', () => {
     const error = errorOf(await runToolContract(searchSitesTool, { cursor: 'garbage' }));
     expect(error.code).toBe(JsonRpcErrorCode.InvalidParams);
     expect(error.data?.reason).toBe('invalid_cursor');
+  });
+
+  it('invalid_cursor, with the declared recovery, for a cursor whose offset is not a whole number', async () => {
+    const { fp, asOf } = await cursorFor({});
+    const cursor = encodeCursor({ offset: 1.5, limit: 20, fp, asOf });
+    const error = errorOf(await runToolContract(searchSitesTool, { cursor }));
+    expect(error.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(error.data?.reason).toBe('invalid_cursor');
+    expect(error.data?.recovery?.hint).toBe(
+      declaredRecovery(searchSitesTool.errors, 'invalid_cursor'),
+    );
   });
 
   it('carries the declared reason on a thrown error when the handler is called directly', async () => {

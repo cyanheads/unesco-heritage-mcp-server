@@ -13,6 +13,7 @@ import {
   composePageNotice,
   countOf,
   pageEnrichment,
+  renderCounts,
   renderSources,
 } from '@/mcp-server/shared/enrichment.js';
 import {
@@ -275,6 +276,7 @@ export const searchSitesTool = tool('unesco_search_sites', {
       reason: 'unknown_country',
       code: JsonRpcErrorCode.ValidationError,
       when: 'country is not a recognized ISO 3166-1 alpha-2 or alpha-3 code, such as a country name or an unassigned code',
+      severity: 'notice',
       recovery:
         'Call unesco_list_reference with topic countries and filter set to the country name to find its ISO code, then call unesco_search_sites again with that code.',
     },
@@ -282,6 +284,7 @@ export const searchSitesTool = tool('unesco_search_sites', {
       reason: 'invalid_year_range',
       code: JsonRpcErrorCode.ValidationError,
       when: 'inscribed_from is later than inscribed_to',
+      severity: 'notice',
       recovery:
         'Set inscribed_from to a year at or before inscribed_to, then call unesco_search_sites again.',
     },
@@ -289,6 +292,7 @@ export const searchSitesTool = tool('unesco_search_sites', {
       reason: 'sort_needs_input',
       code: JsonRpcErrorCode.ValidationError,
       when: 'sort relevance without query, or sort distance without near',
+      severity: 'notice',
       recovery:
         'Add query for sort relevance or near for sort distance, or call unesco_search_sites with sort name, inscribed_newest, inscribed_oldest, area_largest, or danger_listed_newest.',
     },
@@ -296,8 +300,18 @@ export const searchSitesTool = tool('unesco_search_sites', {
       reason: 'cursor_mismatch',
       code: JsonRpcErrorCode.ValidationError,
       when: 'cursor was issued for different filters or sort, or for an earlier data snapshot',
+      severity: 'notice',
       recovery:
         'Call unesco_search_sites again with the same filters and no cursor, then page with the next_cursor it returns.',
+    },
+    {
+      reason: 'invalid_cursor',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'cursor is malformed, or its offset or limit is not a non-negative whole number',
+      severity: 'notice',
+      thrownBy: 'service',
+      recovery:
+        'Call unesco_search_sites without cursor to start from the first page, or pass the next_cursor from the previous response unchanged.',
     },
     {
       reason: 'snapshot_unavailable',
@@ -627,17 +641,12 @@ function siteFacets(sites: readonly HeritageSite[]): Facets {
 }
 
 function renderFacets(f: Facets): string {
-  const counts = (record: Record<string, number>, label: (k: string) => string = (k) => k) =>
-    Object.entries(record)
-      .filter(([, n]) => n > 0)
-      .map(([k, n]) => `${label(k)} ${n}`)
-      .join(' · ') || 'none';
   return [
     '### Facets (whole match)',
-    `- Category: ${counts(f.category)}`,
-    `- Region: ${counts(f.region)}`,
+    `- Category: ${renderCounts(f.category)}`,
+    `- Region: ${renderCounts(f.region)}`,
     `- In Danger: yes ${f.in_danger.true} · no ${f.in_danger.false}`,
-    `- Criteria: ${counts(f.criteria, (k) => (k === 'vi' ? 'vi (inferred)' : k))}`,
+    `- Criteria: ${renderCounts(f.criteria, (k) => (k === 'vi' ? 'vi (inferred)' : k))}`,
     `- Top countries: ${
       f.top_countries
         .map((c) => `${inline(c.name)}${c.code ? ` (${c.code})` : ''} ${c.count}`)

@@ -92,6 +92,7 @@ export const getIntangibleHeritageElementTool = tool('unesco_get_intangible_heri
       reason: 'element_not_found',
       code: JsonRpcErrorCode.NotFound,
       when: 'No record carries this ich_ref',
+      severity: 'notice',
       recovery:
         "Find the element's ich_ref with unesco_search_intangible_heritage (search by name), then call unesco_get_intangible_heritage_element again.",
     },

@@ -11,7 +11,13 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { countOf, renderSources, sourcesField } from '@/mcp-server/shared/enrichment.js';
 import { queryInput } from '@/mcp-server/shared/inputs.js';
 import { cell, inline } from '@/mcp-server/shared/markdown.js';
-import { alpha3Of, countryDisplayName } from '@/services/unesco-datahub/iso3166.js';
+import {
+  alpha3Of,
+  countryAliases,
+  countryDisplayName,
+  isAssignedAlpha2,
+  normalizeCountry,
+} from '@/services/unesco-datahub/iso3166.js';
 import { compareText, matchesAllWords } from '@/services/unesco-datahub/search.js';
 import type {
   BiosphereSnapshot,
@@ -27,6 +33,7 @@ import {
   CRITERIA,
   CRITERIA_CODES,
   DATASET_TITLES,
+  type DatasetId,
   datasetAttribution,
   INTANGIBLE_LIST_ACRONYMS,
   INTANGIBLE_LISTS,
@@ -187,7 +194,7 @@ export const listReferenceTool = tool('unesco_list_reference', {
         'What to list. criteria: the ten inscription criteria (i)–(x) with meanings and site counts, the values of the criteria input of unesco_search_sites. countries: every country with its ISO alpha-2 and alpha-3 codes and counts per dataset, the values of every country input. regions: the five UNESCO regions with codes, the values of the region inputs. intangible_lists: the three intangible heritage lists with acronyms, the values of the list input of unesco_search_intangible_heritage. biosphere_networks: the MAB regional networks with acronyms, the values of the regional_network input of unesco_search_biosphere_reserves. datasets: each dataset with its record count, data date, license, attribution, and coverage notes.',
       ),
     filter: queryInput(
-      "Keep only entries whose name or code (a criterion's meaning, a dataset's title) contains every word of this text, each word matching at the start of a word. Case, accents, and punctuation are ignored, so the filter must contain at least one letter or digit. For example, a country name finds its ISO code.",
+      "Keep only entries whose name or code (a criterion's meaning, a dataset's title) contains every word of this text, each word matching at the start of a word. Case, accents, and punctuation are ignored, so the filter must contain at least one letter or digit. For example, a country name finds its ISO code. For countries, a two- or three-letter ISO code (or UK) keeps exactly that country, as the country inputs read it, and common former or everyday names such as Turkey, Swaziland, or Holland match too.",
       100,
     ),
   }),
@@ -219,6 +226,7 @@ export const listReferenceTool = tool('unesco_list_reference', {
 
     const loadAll = () =>
       Promise.all([svc.getHeritage(ctx), svc.getIntangible(ctx), svc.getBiosphere(ctx)]);
+    let noMatch: string | undefined;
 
     const list = async (topic: Topic): Promise<ReferenceResult> => {
       switch (topic) {
@@ -230,13 +238,23 @@ export const listReferenceTool = tool('unesco_list_reference', {
         case 'countries': {
           const snapshots = await loadAll();
           ctx.enrich({ sources: snapshots.map(sourceOf) });
+          const rows = countryRows(...snapshots);
+          const code = filter && normalizeCountry(filter);
+          if (typeof code === 'string' && isAssignedAlpha2(code)) {
+            const exact = rows.filter((r) => r.code === code);
+            if (exact.length === 0) {
+              noMatch = `${code} (${countryDisplayName(code)}) is an assigned ISO 3166-1 code, but no UNESCO dataset lists that country.`;
+            }
+            return { topic, countries: exact };
+          }
           return {
             topic,
-            countries: keep(countryRows(...snapshots), (r) => [
+            countries: keep(rows, (r) => [
               r.code,
               r.alpha3,
               r.name,
               r.unesco_name,
+              ...countryAliases(r.code),
             ]),
           };
         }
@@ -286,7 +304,8 @@ export const listReferenceTool = tool('unesco_list_reference', {
     const listed = result[result.topic];
     if (filter && listed?.length === 0) {
       ctx.enrich.notice(
-        `No ${input.topic} entry contains every word of "${inline(filter)}". Call unesco_list_reference with topic ${input.topic} and no filter to see every entry.`,
+        noMatch ??
+          `No ${input.topic} entry contains every word of "${inline(filter)}". Call unesco_list_reference with topic ${input.topic} and no filter to see every entry.`,
       );
     }
     ctx.log.info('Reference listed', { topic: input.topic, entries: listed?.length ?? 0 });
@@ -493,7 +512,7 @@ function datasetRows(
 ): z.infer<typeof DatasetRow>[] {
   const viSites = heritage.records.filter((s) => s.criteria_inferred.includes('vi')).length;
   const dated2008 = intangible.records.filter((e) => e.inscribed_year === 2008).length;
-  const notes: Record<string, string[]> = {
+  const notes: Record<DatasetId, string[]> = {
     whc001: [
       `UNESCO's criteria fields omit criterion (vi); this server infers it from each site's statement of Outstanding Universal Value (${countOf(viSites, 'site')}) and marks it as inferred.`,
       'The Danger list carries one year per current listing: no threat factors, no earlier listings, and no sites removed from the list.',
@@ -517,6 +536,6 @@ function datasetRows(
     license: s.license,
     license_url: LICENSE_URL,
     attribution: datasetAttribution(s.dataset),
-    coverage_notes: notes[s.dataset] ?? [],
+    coverage_notes: notes[s.dataset],
   }));
 }

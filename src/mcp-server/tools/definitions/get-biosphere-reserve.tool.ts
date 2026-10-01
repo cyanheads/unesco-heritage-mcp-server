@@ -111,6 +111,7 @@ export const getBiosphereReserveTool = tool('unesco_get_biosphere_reserve', {
       reason: 'biosphere_reserve_not_found',
       code: JsonRpcErrorCode.NotFound,
       when: 'No record carries this mab_id, after folding case and diacritics',
+      severity: 'notice',
       recovery:
         "Find the reserve's mab_id with unesco_search_biosphere_reserves (search by name), then call unesco_get_biosphere_reserve again.",
     },

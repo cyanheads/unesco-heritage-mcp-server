@@ -1,7 +1,8 @@
 /**
  * @fileoverview ISO 3166-1 alpha-2 ↔ alpha-3 table (the 249 officially assigned
- * codes), the `country` input normalizer, the alpha-2 validity check, and
- * English display names. The bundled table is the only source of code validity;
+ * codes), the `country` input normalizer, the alpha-2 validity check, English
+ * display names, and the alternate names the reference filter matches. The
+ * bundled table is the only source of code validity;
  * `Intl.DisplayNames` supplies names but cannot validate, since it names
  * unassigned codes too.
  * @module services/unesco-datahub/iso3166
@@ -293,4 +294,26 @@ export function alpha3Of(code: string): string | undefined {
 /** English display name for an alpha-2 code, falling back to the code itself. */
 export function countryDisplayName(code: string): string {
   return displayNames.of(code) ?? code;
+}
+
+/**
+ * Former and everyday English names that neither the display name nor UNESCO's
+ * spelling carries, by alpha-2 code. Only the reference `filter` reads them;
+ * country inputs take codes alone.
+ */
+const COUNTRY_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  CD: ['DR Congo', 'DRC'],
+  CG: ['Republic of the Congo'],
+  CI: ['Ivory Coast'],
+  CZ: ['Czech Republic'],
+  GB: ['England', 'Scotland', 'Wales'],
+  NL: ['Holland'],
+  SZ: ['Swaziland'],
+  TL: ['East Timor'],
+  TR: ['Turkey'],
+};
+
+/** Alternate English names for an alpha-2 code; empty when none are bundled. */
+export function countryAliases(code: string | undefined): readonly string[] {
+  return (code && COUNTRY_ALIASES[code]) || [];
 }

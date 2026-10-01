@@ -14,6 +14,7 @@ import {
   composePageNotice,
   countOf,
   pageEnrichment,
+  renderCounts,
   renderSources,
 } from '@/mcp-server/shared/enrichment.js';
 import {
@@ -52,7 +53,6 @@ import {
 import {
   INTANGIBLE_LIST_ACRONYMS,
   INTANGIBLE_LISTS,
-  type IntangibleList,
 } from '@/services/unesco-datahub/vocabulary.js';
 
 const SORTS = ['relevance', 'name', 'inscribed_newest', 'inscribed_oldest'] as const;
@@ -63,9 +63,7 @@ const MATCH_TIERS = ['name', 'concepts', 'description'] as const;
 const INCORPORATION_YEAR = 2008;
 
 const LIST_ALIASES = Object.fromEntries(
-  (Object.entries(INTANGIBLE_LIST_ACRONYMS) as [IntangibleList, string][]).map(
-    ([name, acronym]) => [acronym, name],
-  ),
+  INTANGIBLE_LISTS.map((name) => [INTANGIBLE_LIST_ACRONYMS[name], name]),
 );
 
 const ElementRow = z
@@ -221,6 +219,7 @@ export const searchIntangibleHeritageTool = tool('unesco_search_intangible_herit
       reason: 'unknown_country',
       code: JsonRpcErrorCode.ValidationError,
       when: 'country is not a recognized ISO 3166-1 alpha-2 or alpha-3 code, such as a country name or an unassigned code',
+      severity: 'notice',
       recovery:
         'Call unesco_list_reference with topic countries and filter set to the country name to find its ISO code, then call unesco_search_intangible_heritage again with that code.',
     },
@@ -228,6 +227,7 @@ export const searchIntangibleHeritageTool = tool('unesco_search_intangible_herit
       reason: 'invalid_year_range',
       code: JsonRpcErrorCode.ValidationError,
       when: 'inscribed_from is later than inscribed_to',
+      severity: 'notice',
       recovery:
         'Set inscribed_from to a year at or before inscribed_to, then call unesco_search_intangible_heritage again.',
     },
@@ -235,6 +235,7 @@ export const searchIntangibleHeritageTool = tool('unesco_search_intangible_herit
       reason: 'sort_needs_input',
       code: JsonRpcErrorCode.ValidationError,
       when: 'sort relevance without query',
+      severity: 'notice',
       recovery:
         'Add query for sort relevance, or call unesco_search_intangible_heritage with sort name, inscribed_newest, or inscribed_oldest.',
     },
@@ -242,8 +243,18 @@ export const searchIntangibleHeritageTool = tool('unesco_search_intangible_herit
       reason: 'cursor_mismatch',
       code: JsonRpcErrorCode.ValidationError,
       when: 'cursor was issued for different filters or sort, or for an earlier data snapshot',
+      severity: 'notice',
       recovery:
         'Call unesco_search_intangible_heritage again with the same filters and no cursor, then page with the next_cursor it returns.',
+    },
+    {
+      reason: 'invalid_cursor',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'cursor is malformed, or its offset or limit is not a non-negative whole number',
+      severity: 'notice',
+      thrownBy: 'service',
+      recovery:
+        'Call unesco_search_intangible_heritage without cursor to start from the first page, or pass the next_cursor from the previous response unchanged.',
     },
     {
       reason: 'snapshot_unavailable',
@@ -498,14 +509,9 @@ function elementFacets(elements: readonly IntangibleElement[]): Facets {
 }
 
 function renderFacets(f: Facets): string {
-  const lists =
-    Object.entries(f.list)
-      .filter(([, n]) => n > 0)
-      .map(([k, n]) => `${k} ${n}`)
-      .join(' · ') || 'none';
   return [
     '### Facets (whole match)',
-    `- List: ${lists}`,
+    `- List: ${renderCounts(f.list)}`,
     `- Multinational: yes ${f.multinational.true} · no ${f.multinational.false}`,
     `- Top countries: ${
       f.top_countries.map((c) => `${inline(c.name)} (${c.code}) ${c.count}`).join(' · ') || 'none'

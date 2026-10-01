@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listReferenceTool } from '@/mcp-server/tools/definitions/list-reference.tool.js';
 import { CRITERIA } from '@/services/unesco-datahub/vocabulary.js';
 import { DATA_AS_OF, type HubOptions, httpFailure } from '../fixtures/hub.js';
-import { WHC_ROWS, whcRow } from '../fixtures/rows.js';
+import { ICH_ROWS, ichRow, WHC_ROWS, whcRow } from '../fixtures/rows.js';
 import {
   allText,
   disposeServiceAfterEach,
@@ -371,6 +371,72 @@ describe('unesco_list_reference — filter', () => {
       expect(out.notice, topic).toContain(`No ${topic} entry contains every word`);
       expect(out.notice, topic).toContain(`topic ${topic} and no filter`);
     }
+  });
+});
+
+describe('unesco_list_reference — countries filter: codes and alternate names', () => {
+  const EXTRA_CODES = ['UA', 'GB', 'TR', 'CZ', 'CI', 'SZ', 'TL', 'NL', 'CD', 'CG'];
+
+  beforeEach(() => {
+    useHub({
+      rows: {
+        ich001: [
+          ...ICH_ROWS,
+          ...EXTRA_CODES.map((code, i) =>
+            ichRow({
+              ich_public_ref: String(5001 + i),
+              countries: [code],
+              http_url_en: `https://ich.unesco.org/en/RL/0${5001 + i}`,
+            }),
+          ),
+        ],
+      },
+    });
+  });
+
+  it.each([
+    ['UK', 'GB'],
+    ['uk', 'GB'],
+    [' Uk ', 'GB'],
+    ['gbr', 'GB'],
+    ['GB', 'GB'],
+    ['UA', 'UA'],
+    ['ukr', 'UA'],
+    ['fra', 'FR'],
+  ])(
+    'reads the code-shaped filter %j exactly as a country input reads it (%s)',
+    async (filter, code) => {
+      const { out } = await list({ topic: 'countries', filter });
+      expect(out.countries?.map((c) => c.code)).toEqual([code]);
+    },
+  );
+
+  it('says an assigned code that no dataset lists is a real code with no records', async () => {
+    const { out } = await list({ topic: 'countries', filter: 'aq' });
+    expect(out.countries).toEqual([]);
+    expect(out.notice).toBe(
+      'AQ (Antarctica) is an assigned ISO 3166-1 code, but no UNESCO dataset lists that country.',
+    );
+  });
+
+  it('keeps word-prefix matching for a short filter that is not an assigned code', async () => {
+    const { out } = await list({ topic: 'countries', filter: 'ger' });
+    expect(out.countries?.map((c) => c.code)).toEqual(['DE']);
+  });
+
+  it.each([
+    ['Turkey', 'TR'],
+    ['Czech Republic', 'CZ'],
+    ['Ivory Coast', 'CI'],
+    ['Swaziland', 'SZ'],
+    ['East Timor', 'TL'],
+    ['Holland', 'NL'],
+    ['DR Congo', 'CD'],
+    ['Republic of the Congo', 'CG'],
+    ['england', 'GB'],
+  ])('resolves the former or everyday name %j to %s', async (filter, code) => {
+    const { out } = await list({ topic: 'countries', filter });
+    expect(out.countries?.map((c) => c.code)).toEqual([code]);
   });
 });
 

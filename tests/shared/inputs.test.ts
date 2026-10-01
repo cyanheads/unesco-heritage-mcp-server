@@ -296,6 +296,10 @@ describe('record id normalizers', () => {
     ['https://whc.unesco.org/en/list/101#anchor', '101'],
     ['HTTPS://WHC.UNESCO.ORG/EN/LIST/101/', '101'],
     ['https://whc.unesco.org/zh-cn/list/12', '12'],
+    ['https://whc.unesco.org/en/list/162/gallery/', '162'],
+    ['https://whc.unesco.org/en/list/162/documents/', '162'],
+    ['whc.unesco.org/fr/list/162/maps', '162'],
+    ['https://whc.unesco.org/en/list/162/gallery/?index=2#top', '162'],
   ])('normalizeWhcId(%j) = %j', (input, expected) => {
     expect(normalizeWhcId(input)).toBe(expected);
   });
@@ -308,6 +312,9 @@ describe('record id normalizers', () => {
     ],
     ['abc', 'abc'],
     ['10 1', '10 1'],
+    ['https://whc.unesco.org/en/list/162abc/', 'https://whc.unesco.org/en/list/162abc/'],
+    ['https://whc.unesco.org/en/list/', 'https://whc.unesco.org/en/list/'],
+    ['https://whc.unesco.org/en/list/gallery/162/', 'https://whc.unesco.org/en/list/gallery/162/'],
   ])('normalizeWhcId leaves %j unrecognized', (input, expected) => {
     expect(normalizeWhcId(input)).toBe(expected);
   });
@@ -325,8 +332,19 @@ describe('record id normalizers', () => {
     ['ich.unesco.org/en/Art18/01003/', '1003'],
     ['https://ich.unesco.org/en/rl/00042', '42'],
     [' 0042 ', '42'],
+    ['https://ich.unesco.org/en/RL/example-element-name-01964', '1964'],
+    ['https://ich.unesco.org/fr/USL/une-pratique-de-2-villages-00123/', '123'],
+    ['ich.unesco.org/en/Art18/register-of-practices-01003?lg=en', '1003'],
   ])('normalizeIchRef(%j) = %j', (input, expected) => {
     expect(normalizeIchRef(input)).toBe(expected);
+  });
+
+  it.each([
+    'https://ich.unesco.org/en/RL/example-element-name',
+    'https://ich.unesco.org/en/RL/example-element-name-01964/extra',
+    'https://ich.unesco.org/en/RL/01964abc',
+  ])('normalizeIchRef leaves %j unrecognized', (input) => {
+    expect(normalizeIchRef(input)).toBe(input);
   });
 
   it('does not treat a World Heritage page URL as an element URL, or the reverse', () => {
@@ -357,6 +375,12 @@ describe('idNoInput / ichRefInput / optionalIdNoInput', () => {
     expect(parsed(idNo, 'https://whc.unesco.org/en/list/1810/')).toBe('1810');
     expect(parsed(ichRef, 2474)).toBe('2474');
     expect(parsed(ichRef, 'https://ich.unesco.org/en/RL/00042')).toBe('42');
+  });
+
+  it('accepts an element page URL with its title slug and a site sub-page URL', () => {
+    expect(parsed(ichRef, 'https://ich.unesco.org/en/RL/example-element-name-01964')).toBe('1964');
+    expect(parsed(idNo, 'https://whc.unesco.org/en/list/162/gallery/')).toBe('162');
+    expect(parsed(optional, 'https://whc.unesco.org/en/list/162/documents/')).toBe('162');
   });
 
   it('enforces one to five digits without a leading zero', () => {

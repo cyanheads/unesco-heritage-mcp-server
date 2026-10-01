@@ -14,6 +14,7 @@ import {
   composePageNotice,
   countOf,
   pageEnrichment,
+  renderCounts,
   renderSources,
 } from '@/mcp-server/shared/enrichment.js';
 import {
@@ -246,6 +247,7 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
       reason: 'unknown_country',
       code: JsonRpcErrorCode.ValidationError,
       when: 'country is not a recognized ISO 3166-1 alpha-2 or alpha-3 code, such as a country name or an unassigned code',
+      severity: 'notice',
       recovery:
         'Call unesco_list_reference with topic countries and filter set to the country name to find its ISO code, then call unesco_search_biosphere_reserves again with that code.',
     },
@@ -253,6 +255,7 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
       reason: 'invalid_year_range',
       code: JsonRpcErrorCode.ValidationError,
       when: 'designated_from is later than designated_to',
+      severity: 'notice',
       recovery:
         'Set designated_from to a year at or before designated_to, then call unesco_search_biosphere_reserves again.',
     },
@@ -260,6 +263,7 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
       reason: 'sort_needs_input',
       code: JsonRpcErrorCode.ValidationError,
       when: 'sort relevance without query, or sort distance without near',
+      severity: 'notice',
       recovery:
         'Add query for sort relevance or near for sort distance, or call unesco_search_biosphere_reserves with sort name, designated_newest, designated_oldest, or area_largest.',
     },
@@ -267,8 +271,18 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
       reason: 'cursor_mismatch',
       code: JsonRpcErrorCode.ValidationError,
       when: 'cursor was issued for different filters or sort, or for an earlier data snapshot',
+      severity: 'notice',
       recovery:
         'Call unesco_search_biosphere_reserves again with the same filters and no cursor, then page with the next_cursor it returns.',
+    },
+    {
+      reason: 'invalid_cursor',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'cursor is malformed, or its offset or limit is not a non-negative whole number',
+      severity: 'notice',
+      thrownBy: 'service',
+      recovery:
+        'Call unesco_search_biosphere_reserves without cursor to start from the first page, or pass the next_cursor from the previous response unchanged.',
     },
     {
       reason: 'snapshot_unavailable',
@@ -547,15 +561,10 @@ function reserveFacets(reserves: readonly BiosphereReserve[]): Facets {
 }
 
 function renderFacets(f: Facets): string {
-  const counts = (record: Record<string, number>) =>
-    Object.entries(record)
-      .filter(([, n]) => n > 0)
-      .map(([k, n]) => `${k} ${n}`)
-      .join(' · ') || 'none';
   return [
     '### Facets (whole match)',
-    `- Region: ${counts(f.region)}`,
-    `- Regional network: ${counts(f.regional_network)}`,
+    `- Region: ${renderCounts(f.region)}`,
+    `- Regional network: ${renderCounts(f.regional_network)}`,
     `- Transboundary: yes ${f.transboundary.true} · no ${f.transboundary.false}`,
     `- SIDS: yes ${f.sids.true} · no ${f.sids.false}`,
     `- Top countries: ${

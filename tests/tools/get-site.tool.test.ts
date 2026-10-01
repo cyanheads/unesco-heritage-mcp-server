@@ -150,7 +150,7 @@ describe('unesco_get_site — record', () => {
     expect(text).toContain('**Area:** Not available');
     expect(text).toContain('**Coordinates:** Not available');
     expect(text).toContain('**Image:** Not available');
-    expect(text).toContain('**Components** (0 of 0)');
+    expect(text).not.toContain('**Components**');
   });
 
   it('renders "Not recorded" for a site with no criteria at all', async () => {

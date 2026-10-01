@@ -7,6 +7,7 @@
  * @module services/unesco-datahub/search
  */
 
+import { invalidParams } from '@cyanheads/mcp-ts-core/errors';
 import type { RequestContext } from '@cyanheads/mcp-ts-core/utils';
 import { decodeCursor, encodeCursor } from '@cyanheads/mcp-ts-core/utils';
 
@@ -203,11 +204,19 @@ export function makeCursor(state: SearchCursor & { limit: number }): string {
 
 /**
  * Decodes a search cursor. A malformed cursor throws the framework's
- * `InvalidParams` (`reason: 'invalid_cursor'`); a well-formed one missing the
- * fingerprint fields decodes with empty strings, which never match.
+ * `InvalidParams` (`reason: 'invalid_cursor'`), and so does one whose `offset`
+ * or `limit` is not a safe integer: the framework's decoder rejects negative
+ * values but lets fractions and infinities through. A well-formed cursor
+ * missing the fingerprint fields decodes with empty strings, which never match.
  */
 export function readCursor(cursor: string, context: RequestContext): SearchCursor {
   const state = decodeCursor(cursor, context);
+  if (!Number.isSafeInteger(state.offset) || !Number.isSafeInteger(state.limit)) {
+    throw invalidParams(
+      'Invalid pagination cursor: its offset and limit must be non-negative whole numbers.',
+      { reason: 'invalid_cursor' },
+    );
+  }
   return {
     offset: state.offset,
     fp: typeof state.fp === 'string' ? state.fp : '',

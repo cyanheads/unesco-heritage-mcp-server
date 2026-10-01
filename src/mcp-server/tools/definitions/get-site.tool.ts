@@ -139,6 +139,7 @@ export const getSiteTool = tool('unesco_get_site', {
       reason: 'site_not_found',
       code: JsonRpcErrorCode.NotFound,
       when: 'No record carries this id_no',
+      severity: 'notice',
       recovery:
         "Find the site's id_no with unesco_search_sites (search by name), then call unesco_get_site again.",
     },
@@ -219,21 +220,20 @@ export const getSiteTool = tool('unesco_get_site', {
       '',
       '**Other names:**',
     ];
-    const names = Object.entries(r.names).filter(([, v]) => v);
-    lines.push(
-      ...(names.length > 0
-        ? names.map(([lang, v]) => `- ${lang}: ${inline(v ?? '')}`)
-        : ['- None recorded']),
+    const names = Object.entries(r.names).flatMap(([lang, v]) =>
+      v ? [`- ${lang}: ${inline(v)}`] : [],
     );
-    lines.push(
-      '',
-      `**Components** (${r.components.length} of ${r.components_total}${r.components_unparsed > 0 ? `, ${r.components_unparsed} unreadable` : ''}):`,
-      ...r.components.map(
-        (c) =>
-          `- ${inline(c.ref)} — ${c.name ? inline(c.name) : 'Name not available'} (${c.latitude}, ${c.longitude})`,
-      ),
-      '',
-    );
+    lines.push(...(names.length > 0 ? names : ['- None recorded']), '');
+    if (r.components_total > 0 || r.components.length > 0 || r.components_unparsed > 0) {
+      lines.push(
+        `**Components** (${r.components.length} of ${r.components_total}${r.components_unparsed > 0 ? `, ${r.components_unparsed} unreadable` : ''}):`,
+        ...r.components.map(
+          (c) =>
+            `- ${inline(c.ref)} — ${c.name ? inline(c.name) : 'Name not available'} (${c.latitude}, ${c.longitude})`,
+        ),
+        '',
+      );
+    }
     if (r.image) {
       lines.push(
         `**Image:** ${r.image.url}`,

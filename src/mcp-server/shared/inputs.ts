@@ -9,7 +9,7 @@
 import { z } from '@cyanheads/mcp-ts-core';
 import { normalizeCountry } from '@/services/unesco-datahub/iso3166.js';
 import { queryWords } from '@/services/unesco-datahub/search.js';
-import { REGION_CODES, REGIONS, type RegionName } from '@/services/unesco-datahub/vocabulary.js';
+import { REGION_CODES, REGIONS } from '@/services/unesco-datahub/vocabulary.js';
 
 /** True for a string that is empty after trimming — what form clients send for "unset". */
 export function isBlank(value: unknown): boolean {
@@ -46,9 +46,7 @@ export function foldToEnum(
 
 /** The five UNESCO regions; codes (AFR, ARB, APA, EUR, LAC) are accepted, any case. */
 export function regionInput(description: string) {
-  const aliases = Object.fromEntries(
-    (Object.entries(REGION_CODES) as [RegionName, string][]).map(([name, code]) => [code, name]),
-  );
+  const aliases = Object.fromEntries(REGIONS.map((name) => [REGION_CODES[name], name]));
   return blankAsUnset(z.enum(REGIONS).optional(), foldToEnum(REGIONS, aliases)).describe(
     description,
   );
@@ -128,10 +126,12 @@ export function nearInput(description: string) {
     .describe(description);
 }
 
+/** A site page or any sub-page under it (`…/list/162/gallery/`). */
 const WHC_PAGE_URL =
-  /^(?:https?:\/\/)?(?:www\.)?whc\.unesco\.org\/[a-z-]+\/list\/(\d+)\/?(?:[?#].*)?$/i;
+  /^(?:https?:\/\/)?(?:www\.)?whc\.unesco\.org\/[a-z-]+\/list\/(\d+)(?:\/[^?#\s]*)?(?:[?#].*)?$/i;
+/** An element page, with or without the title slug before the ref (`…/RL/some-title-01964`). */
 const ICH_PAGE_URL =
-  /^(?:https?:\/\/)?(?:www\.)?ich\.unesco\.org\/[a-z-]+\/(?:RL|USL|Art18)\/(\d+)\/?(?:[?#].*)?$/i;
+  /^(?:https?:\/\/)?(?:www\.)?ich\.unesco\.org\/[a-z-]+\/(?:RL|USL|Art18)\/(?:[^/?#\s]*-)?(\d+)\/?(?:[?#].*)?$/i;
 
 function normalizeNumericId(value: unknown, pageUrl: RegExp): unknown {
   if (typeof value === 'number' && Number.isInteger(value)) return String(value);

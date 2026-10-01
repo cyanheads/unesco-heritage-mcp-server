@@ -2,7 +2,8 @@
  * @fileoverview Shared enrichment fields and trailer renderers: the `sources`
  * attribution block every data response carries, the page fields every search
  * tool carries, the composed page notice and its combined-filters zero-hit
- * fragment, and the count phrase notices and page headers use.
+ * fragment, the count phrase notices and page headers use, and the facet-count
+ * line the search trailers render.
  * @module mcp-server/shared/enrichment
  */
 
@@ -53,6 +54,19 @@ export const pageEnrichment = {
 /** A count with its noun, pluralized with `s` unless the count is 1: `1 site`, `3 sites`. */
 export function countOf(count: number, noun: string): string {
   return `${count} ${count === 1 ? noun : `${noun}s`}`;
+}
+
+/** A facet's non-zero counts as `key n · key n`, or `none` when every count is 0. */
+export function renderCounts(
+  counts: Record<string, number>,
+  label: (key: string) => string = (key) => key,
+): string {
+  return (
+    Object.entries(counts)
+      .filter(([, n]) => n > 0)
+      .map(([key, n]) => `${label(key)} ${n}`)
+      .join(' · ') || 'none'
+  );
 }
 
 /**

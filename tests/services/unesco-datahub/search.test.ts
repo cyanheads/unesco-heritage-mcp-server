@@ -5,7 +5,7 @@
  * @module tests/services/unesco-datahub/search.test
  */
 
-import { McpError } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { encodeCursor } from '@cyanheads/mcp-ts-core/utils';
 import { describe, expect, it } from 'vitest';
 import {
@@ -268,6 +268,22 @@ describe('cursor round trip', () => {
   it('decodes a well-formed cursor without fingerprint fields to empty strings that never match', () => {
     const cursor = encodeCursor({ offset: 5, limit: 10 });
     expect(readCursor(cursor, context)).toEqual({ offset: 5, fp: '', asOf: '' });
+  });
+
+  it.each([
+    ['a fractional offset', encodeCursor({ offset: 1.5, limit: 20, fp: 'abc', asOf: 'x' })],
+    ['a fractional limit', encodeCursor({ offset: 20, limit: 2.5, fp: 'abc', asOf: 'x' })],
+    ['an infinite offset', Buffer.from('{"offset":1e999,"limit":20}').toString('base64url')],
+    ['a negative offset', encodeCursor({ offset: -20, limit: 20 })],
+  ])('rejects a cursor carrying %s as invalid_cursor', (_label, cursor) => {
+    try {
+      readCursor(cursor, context);
+      expect.unreachable('expected an error');
+    } catch (error) {
+      expect(error).toBeInstanceOf(McpError);
+      expect((error as McpError).code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect((error as McpError).data).toMatchObject({ reason: 'invalid_cursor' });
+    }
   });
 
   it('rejects a malformed cursor with the framework invalid_cursor error', () => {
