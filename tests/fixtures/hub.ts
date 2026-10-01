@@ -94,9 +94,9 @@ export function createHub(options: HubOptions = {}): FakeHub {
   const calls: HubCall[] = [];
   const get: Get = async (url, timeoutMs, _context, init) => {
     const href = String(url);
-    const match = new RegExp(`^${BASE_URL}/(whc001|ich001|mab001)(/exports/json\\?.*)?$`).exec(
-      href,
-    );
+    const match = href.startsWith(`${BASE_URL}/`)
+      ? /^(whc001|ich001|mab001)(\/exports\/json\?.*)?$/.exec(href.slice(BASE_URL.length + 1))
+      : null;
     if (!match) throw new Error(`Unexpected upstream URL: ${href}`);
     const dataset = match[1] as DatasetId;
     const kind: HubCall['kind'] = match[2] ? 'export' : 'meta';
