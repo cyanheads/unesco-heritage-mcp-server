@@ -2,7 +2,7 @@
   "name": "@cyanheads/unesco-heritage-mcp-server",
   "version": "0.1.1",
   "mcpName": "io.github.cyanheads/unesco-heritage-mcp-server",
-  "description": "Search UNESCO World Heritage sites, intangible heritage, and Man and the Biosphere reserves via MCP. STDIO or Streamable HTTP.",
+  "description": "Search UNESCO World Heritage sites, intangible heritage, biosphere reserves, and Global Geoparks via MCP. STDIO or Streamable HTTP.",
   "author": "Casey Hand <casey@caseyjhand.com> (https://caseyjhand.com)",
   "funding": [
     {
@@ -68,6 +68,7 @@
     "intangible-cultural-heritage",
     "biosphere-reserves",
     "man-and-the-biosphere",
+    "geoparks",
     "cultural-heritage",
     "natural-heritage",
     "open-data"

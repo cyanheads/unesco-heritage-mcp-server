@@ -2,12 +2,18 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.cyanheads/unesco-heritage-mcp-server",
   "title": "unesco-heritage-mcp-server",
-  "description": "Search UNESCO World Heritage sites, intangible heritage, and Man and the Biosphere reserves.",
+  "description": "Search UNESCO World Heritage sites, intangible heritage, biosphere reserves, and Global Geoparks.",
   "repository": {
     "url": "https://github.com/cyanheads/unesco-heritage-mcp-server",
     "source": "github"
   },
   "version": "0.1.1",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://unesco-heritage.caseyjhand.com/mcp"
+    }
+  ],
   "packages": [
     {
       "registryType": "npm",

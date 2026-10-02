@@ -1,7 +1,7 @@
 {
   "name": "unesco-heritage-mcp-server",
   "version": "0.1.1",
-  "description": "Search UNESCO World Heritage sites, intangible heritage, and Man and the Biosphere reserves.",
+  "description": "Search UNESCO World Heritage sites, intangible heritage, biosphere reserves, and Global Geoparks.",
   "author": {
     "name": "cyanheads",
     "email": "casey@caseyjhand.com",
@@ -17,13 +17,14 @@
     "unesco",
     "world-heritage",
     "intangible-cultural-heritage",
-    "biosphere-reserves"
+    "biosphere-reserves",
+    "geoparks"
   ],
   "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
     "displayName": "unesco-heritage-mcp-server",
-    "shortDescription": "Search UNESCO World Heritage sites, intangible heritage, and Man and the Biosphere reserves.",
-    "longDescription": "Read-only access to three UNESCO Data Hub datasets: the World Heritage List, the Intangible Cultural Heritage lists, and the World Network of Biosphere Reserves from the Man and the Biosphere Programme. Search World Heritage sites by keyword, country, category, region, inscription criteria (i)–(x), inscription years, or distance from a point, review the List of World Heritage in Danger, and read a site's statement of Outstanding Universal Value, criteria, and component parts. Find intangible heritage elements by list, country, or the World Heritage site UNESCO links them to, and search biosphere reserves by ecosystem keyword, regional network, or location. A reference tool turns country names into ISO codes and decodes the vocabulary the search tools accept. Every response carries the dataset's data date and CC BY-SA 4.0 attribution. No API key required.",
+    "shortDescription": "Search UNESCO World Heritage sites, intangible heritage, biosphere reserves, and Global Geoparks.",
+    "longDescription": "Read-only access to four UNESCO Data Hub datasets: the World Heritage List, the Intangible Cultural Heritage lists, the World Network of Biosphere Reserves from the Man and the Biosphere Programme, and the UNESCO Global Geoparks. Search World Heritage sites by keyword, country, category, region, inscription criteria (i)–(x), inscription years, or distance from a point, review the List of World Heritage in Danger, and read a site's statement of Outstanding Universal Value, criteria, and component parts. Find intangible heritage elements by list, country, or the World Heritage site UNESCO links them to, search biosphere reserves by ecosystem keyword, regional network, or location, and search geoparks by landform keyword, country, designation year, or location. A reference tool turns country names into ISO codes and decodes the vocabulary the search tools accept. Every response carries the dataset's data date and CC BY-SA 4.0 attribution. No API key required.",
     "developerName": "cyanheads",
     "category": "research",
     "capabilities": ["Read"],

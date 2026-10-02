@@ -115,7 +115,7 @@ ENV NODE_ENV=production
 # OCI image metadata (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
 ARG APP_VERSION
 LABEL org.opencontainers.image.title="unesco-heritage-mcp-server"
-LABEL org.opencontainers.image.description="Search UNESCO World Heritage sites, intangible heritage, and Man and the Biosphere reserves via MCP. STDIO or Streamable HTTP."
+LABEL org.opencontainers.image.description="Search UNESCO World Heritage sites, intangible heritage, biosphere reserves, and Global Geoparks via MCP. STDIO or Streamable HTTP."
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.version="${APP_VERSION}"
 LABEL org.opencontainers.image.source="https://github.com/cyanheads/unesco-heritage-mcp-server"
