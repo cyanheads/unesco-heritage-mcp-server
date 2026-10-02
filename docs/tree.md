@@ -1,6 +1,6 @@
 # unesco-heritage-mcp-server - Directory Structure
 
-Generated on: 2026-10-01 01:59:05
+Generated on: 2026-10-02 05:22:21
 
 ```text
 unesco-heritage-mcp-server/
@@ -139,21 +139,25 @@ unesco-heritage-mcp-server/
 │   │   ├── resources/
 │   │   │   └── definitions/
 │   │   │       ├── biosphere-reserve.resource.ts
+│   │   │       ├── geopark.resource.ts
 │   │   │       ├── intangible-heritage-element.resource.ts
 │   │   │       └── site.resource.ts
 │   │   ├── shared/
 │   │   │   ├── enrichment.ts
 │   │   │   ├── inputs.ts
 │   │   │   └── markdown.ts
-│   │   └── tools/
-│   │       └── definitions/
-│   │           ├── get-biosphere-reserve.tool.ts
-│   │           ├── get-intangible-heritage-element.tool.ts
-│   │           ├── get-site.tool.ts
-│   │           ├── list-reference.tool.ts
-│   │           ├── search-biosphere-reserves.tool.ts
-│   │           ├── search-intangible-heritage.tool.ts
-│   │           └── search-sites.tool.ts
+│   │   ├── tools/
+│   │   │   └── definitions/
+│   │   │       ├── get-biosphere-reserve.tool.ts
+│   │   │       ├── get-geopark.tool.ts
+│   │   │       ├── get-intangible-heritage-element.tool.ts
+│   │   │       ├── get-site.tool.ts
+│   │   │       ├── list-reference.tool.ts
+│   │   │       ├── search-biosphere-reserves.tool.ts
+│   │   │       ├── search-geoparks.tool.ts
+│   │   │       ├── search-intangible-heritage.tool.ts
+│   │   │       └── search-sites.tool.ts
+│   │   └── instructions.ts
 │   ├── services/
 │   │   └── unesco-datahub/
 │   │       ├── iso3166.ts
@@ -179,12 +183,14 @@ unesco-heritage-mcp-server/
 │   ├── prompts/
 │   ├── resources/
 │   │   ├── biosphere-reserve.resource.test.ts
+│   │   ├── geopark.resource.test.ts
 │   │   ├── intangible-heritage-element.resource.test.ts
 │   │   └── site.resource.test.ts
 │   ├── services/
 │   │   └── unesco-datahub/
 │   │       ├── iso3166.test.ts
 │   │       ├── records-element-reserve.test.ts
+│   │       ├── records-geopark.test.ts
 │   │       ├── records.test.ts
 │   │       ├── rows.test.ts
 │   │       ├── search.test.ts
@@ -193,17 +199,21 @@ unesco-heritage-mcp-server/
 │   │   ├── enrichment.test.ts
 │   │   ├── inputs.test.ts
 │   │   ├── mab-id-input.test.ts
-│   │   └── markdown.test.ts
+│   │   ├── markdown.test.ts
+│   │   └── ugg-id-input.test.ts
 │   ├── smoke/
-│   └── tools/
-│       ├── error-severity.test.ts
-│       ├── get-biosphere-reserve.tool.test.ts
-│       ├── get-intangible-heritage-element.tool.test.ts
-│       ├── get-site.tool.test.ts
-│       ├── list-reference.tool.test.ts
-│       ├── search-biosphere-reserves.tool.test.ts
-│       ├── search-intangible-heritage.tool.test.ts
-│       └── search-sites.tool.test.ts
+│   ├── tools/
+│   │   ├── error-severity.test.ts
+│   │   ├── get-biosphere-reserve.tool.test.ts
+│   │   ├── get-geopark.tool.test.ts
+│   │   ├── get-intangible-heritage-element.tool.test.ts
+│   │   ├── get-site.tool.test.ts
+│   │   ├── list-reference.tool.test.ts
+│   │   ├── search-biosphere-reserves.tool.test.ts
+│   │   ├── search-geoparks.tool.test.ts
+│   │   ├── search-intangible-heritage.tool.test.ts
+│   │   └── search-sites.tool.test.ts
+│   └── instructions.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes

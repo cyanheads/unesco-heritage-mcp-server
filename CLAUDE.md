@@ -15,24 +15,25 @@
 
 ## Domain
 
-Seven read-only tools and three resources over three UNESCO Data Hub datasets (`data.unesco.org`, Explore API v2.1), all keyless and CC BY-SA 4.0:
+Nine read-only tools and four resources over four UNESCO Data Hub datasets (`data.unesco.org`, Explore API v2.1), all keyless and CC BY-SA 4.0:
 
 | Dataset | Content | Record key | Tools |
 |:--------|:--------|:-----------|:------|
 | `whc001` | World Heritage List | `id_no` | `unesco_search_sites`, `unesco_get_site` |
 | `ich001` | Intangible Cultural Heritage lists | `ich_ref` | `unesco_search_intangible_heritage`, `unesco_get_intangible_heritage_element` |
 | `mab001` | World Network of Biosphere Reserves | `mab_id` | `unesco_search_biosphere_reserves`, `unesco_get_biosphere_reserve` |
+| `eg0001` | UNESCO Global Geoparks | `ugg_id` | `unesco_search_geoparks`, `unesco_get_geopark` |
 
-`unesco_list_reference` decodes the vocabulary (criteria, countries, regions, intangible lists, MAB networks) and reports dataset coverage. Each resource (`unesco://site/{id_no}`, `unesco://intangible-heritage/{ich_ref}`, `unesco://biosphere-reserve/{mab_id}`) mirrors a get tool. There are no prompts.
+`unesco_list_reference` decodes the vocabulary (criteria, countries with per-dataset counts, regions, intangible lists, MAB networks) and reports dataset coverage. Each resource (`unesco://site/{id_no}`, `unesco://intangible-heritage/{ich_ref}`, `unesco://biosphere-reserve/{mab_id}`, `unesco://geopark/{ugg_id}`) mirrors a get tool. There are no prompts.
 
 `UnescoDataHubService` loads each dataset lazily as an in-memory snapshot (one metadata GET plus one `exports/json` GET), refreshes it after 24 h with stale-while-revalidate, and keeps the previous snapshot when a refresh fails. Every tool call is answered from the snapshot: filtering, keyword tiers, facets, and distance search are local. There are no server-specific environment variables: the TTL, deadlines, and pacer limits are constants.
 
 Conventions every definition follows:
 
-- **Attribution first.** Every data tool declares the required `sources` enrichment field (`sourcesField` from `src/mcp-server/shared/enrichment.ts`) and writes it before any branch; resources embed `sources` in the JSON payload.
+- **Attribution first.** Every data tool declares the required `sources` enrichment field and writes it before any branch; resources embed `sources` in the JSON payload. `sourcesFieldOf(datasets)` from `src/mcp-server/shared/enrichment.ts` builds the field with an enum of exactly the datasets the tool returns: the site, intangible heritage, and reserve tools use `sourcesField` (those three ids), the geopark tools `sourcesFieldOf(['eg0001'])`, and `unesco_list_reference` `sourcesFieldOf(DATASET_IDS)`.
 - **Upstream text is data.** Names, descriptions, and statements of Outstanding Universal Value go through `inline()` / `quote()` / `quoted()` / `cell()` from `src/mcp-server/shared/markdown.ts` before interpolation in `format()`, and upstream URLs through `bareUrl()`. Never interpolate raw upstream text.
-- **Inputs come from `src/mcp-server/shared/inputs.ts`.** Every optional scalar is wrapped in `blankAsUnset`; country, region, year, query, pagination, `near`, and record-id inputs use the shared builders so normalization stays identical across tools.
-- **No fabrication.** Missing coordinates, areas, and images render as `Not available`; MAB areas and populations pass through as recorded; criterion (vi) is marked inferred wherever it appears.
+- **Inputs come from `src/mcp-server/shared/inputs.ts`.** Every optional scalar is wrapped in `blankAsUnset`; country, region, year, query, pagination, `include_description`, `near`, and record-id inputs use the shared builders so normalization stays identical across tools.
+- **No fabrication.** Missing coordinates, areas, and images render as `Not available`; MAB and geopark areas and populations pass through as recorded; criterion (vi) is marked inferred wherever it appears.
 
 ---
 
@@ -198,15 +199,15 @@ None. The server reads no environment variables of its own and has no `src/confi
 
 ### Server identity, instructions, and lifecycle
 
-`src/index.ts` (imports and instructions abridged):
+`src/index.ts` (imports abridged):
 
 ```ts
 await createApp({
   name: 'unesco-heritage-mcp-server',
   title: 'unesco-heritage-mcp-server',
-  instructions: 'Three UNESCO datasets from the UNESCO Data Hub (data.unesco.org), read-only and keyless: …',
-  tools: [searchSitesTool, getSiteTool, /* … */ listReferenceTool],
-  resources: [siteResource, intangibleHeritageElementResource, biosphereReserveResource],
+  instructions: SERVER_INSTRUCTIONS, // src/mcp-server/instructions.ts
+  tools: [searchSitesTool, getSiteTool, /* … */ searchGeoparksTool, getGeoparkTool, listReferenceTool],
+  resources: [siteResource, intangibleHeritageElementResource, biosphereReserveResource, geoparkResource],
   setup() {
     initUnescoDataHubService();
   },
@@ -216,7 +217,7 @@ await createApp({
 });
 ```
 
-Identity is `name` + `title`, both the unscoped package name (`lint:packaging` enforces the match); `description` comes from `package.json`. `instructions` (kept under 2,048 characters) carries the cross-tool workflow, so update it with the tool names whenever the surface changes. `teardown()` disposes the service's pacer.
+Identity is `name` + `title`, both the unscoped package name (`lint:packaging` enforces the match); `description` comes from `package.json`. `SERVER_INSTRUCTIONS` (kept under 2,048 characters) carries the cross-tool workflow, so update it with the tool names whenever the surface changes; `tests/instructions.test.ts` fails when it reaches the limit or omits a tool defined in `src/mcp-server/tools/definitions/`. `teardown()` disposes the service's pacer.
 
 No tool calls `ctx.requestInput`, so `createApp()` declares no `sessionMode`; `.env.example` and the Dockerfile set `MCP_SESSION_MODE=stateless`.
 
@@ -286,7 +287,7 @@ See framework CLAUDE.md and the `api-errors` skill for the full auto-classificat
 
 ```text
 src/
-  index.ts                              # createApp() entry point, server instructions, service lifecycle
+  index.ts                              # createApp() entry point, tool/resource registration, service lifecycle
   services/
     unesco-datahub/
       unesco-datahub-service.ts         # Snapshot lifecycle per dataset: load, TTL, single-flight, backoff, pacer
@@ -297,15 +298,18 @@ src/
       vocabulary.ts                     # Regions, categories, criteria, lists, MAB networks, titles, license
       types.ts                          # Domain and snapshot types
   mcp-server/
+    instructions.ts                     # SERVER_INSTRUCTIONS, the server instructions (< 2,048 characters)
     shared/
       inputs.ts                         # blankAsUnset + shared input builders and record-id normalizers
-      enrichment.ts                     # sources field/trailer, page enrichment, composed page notice
+      enrichment.ts                     # sources field builder/trailer, page enrichment, composed page notice
       markdown.ts                       # inline / cell / quote / quoted / bareUrl for upstream text in format()
-    tools/definitions/                  # 7 tool definitions (*.tool.ts)
-    resources/definitions/              # 3 resource definitions (*.resource.ts)
+    tools/definitions/                  # 9 tool definitions (*.tool.ts): a search/get pair per dataset + unesco_list_reference
+    resources/definitions/              # 4 resource definitions (*.resource.ts), one per dataset
 tests/
   fixtures/                             # Synthetic Data Hub rows + test harness helpers
   services/ shared/ tools/ resources/   # Tests mirroring src/
+  fuzz/                                 # fuzzTool / fuzzResource over every definition (hand-maintained list)
+  instructions.test.ts                  # Instructions length and tool-name coverage
 docs/
   design.md                             # Surface, conventions, lifecycle, data quirks, decisions
 ```
@@ -477,7 +481,7 @@ import { getMyService } from '@/services/my-domain/my-service.js';
 - [ ] Inputs built from `src/mcp-server/shared/inputs.ts`; every optional scalar is blank-as-unset
 - [ ] New export fields: added to the strict row schema in `rows.ts` and the export `select` list, reviewed against real upstream sparsity/nullability, never fabricated when missing
 - [ ] Tests run on synthetic fixtures in `tests/fixtures/`, including at least one sparse row with omitted upstream fields
-- [ ] Registered in the `createApp()` arrays in `src/index.ts`; server `instructions` updated when a tool name or workflow changes
+- [ ] Registered in the `createApp()` arrays in `src/index.ts` and the `TOOLS` / `RESOURCES` lists in `tests/fuzz/definitions.fuzz.test.ts`; `SERVER_INSTRUCTIONS` (`src/mcp-server/instructions.ts`) updated when a tool name or workflow changes
 - [ ] `docs/design.md` updated when the surface or a design decision changes
 - [ ] Tests use `createMockContext()` from `@cyanheads/mcp-ts-core/testing`
 - [ ] `.codex-plugin/plugin.json` populated — `name`, `version`, `description`, `repository`, `license` from `package.json`; `interface.displayName` = the unscoped repo name (never the npm scope — `lint:packaging` enforces this); `interface.shortDescription` from `package.json` description

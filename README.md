@@ -1,7 +1,7 @@
 <div align="center">
   <h1>@cyanheads/unesco-heritage-mcp-server</h1>
-  <p><b>Search UNESCO World Heritage sites, intangible heritage, and Man and the Biosphere reserves via MCP. STDIO or Streamable HTTP.</b>
-  <div>7 Tools • 3 Resources</div>
+  <p><b>Search UNESCO World Heritage sites, intangible heritage, biosphere reserves, and Global Geoparks via MCP. STDIO or Streamable HTTP.</b>
+  <div>9 Tools • 4 Resources</div>
   </p>
 </div>
 
@@ -19,11 +19,17 @@
 
 </div>
 
+<div align="center">
+
+**Public Hosted Server:** [https://unesco-heritage.caseyjhand.com/mcp](https://unesco-heritage.caseyjhand.com/mcp)
+
+</div>
+
 ---
 
 ## Overview
 
-Three UNESCO datasets from the UNESCO Data Hub: the World Heritage List, the Intangible Cultural Heritage lists, and the World Network of Biosphere Reserves. Search sites (the List of World Heritage in Danger included), intangible heritage elements, and biosphere reserves; read full records; find sites or reserves near a point; and turn country names into the ISO codes the filters take. Runs as a stdio process or a local Streamable HTTP server, with no API key.
+Four UNESCO Data Hub datasets: the World Heritage List, the Intangible Cultural Heritage lists, the World Network of Biosphere Reserves, and the UNESCO Global Geoparks. Search sites (the List of World Heritage in Danger included), intangible heritage elements, biosphere reserves, and geoparks; read full records; find sites, reserves, or geoparks near a point; and turn country names into ISO codes. Runs without an API key, as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
 
 ### Tools
 
@@ -35,6 +41,8 @@ Three UNESCO datasets from the UNESCO Data Hub: the World Heritage List, the Int
 | `unesco_get_intangible_heritage_element` | Fetch an element's full record: description, list, countries, concept terms, linked sites, and image credit |
 | `unesco_search_biosphere_reserves` | Search biosphere reserves by keyword, country, region, MAB regional network, designation years, transboundary or SIDS status, or distance from a point |
 | `unesco_get_biosphere_reserve` | Fetch a reserve's full record: ecological and socio-economic profile, zoned areas and population, review years, and coordinates |
+| `unesco_search_geoparks` | Search UNESCO Global Geoparks by keyword, country, designation years, transnational status, or distance from a point |
+| `unesco_get_geopark` | Fetch a geopark's full record: introduction, description, account of sustaining local communities, recorded area and population, and coordinates |
 | `unesco_list_reference` | Decode criteria, countries (name to ISO code), regions, intangible heritage lists, and MAB networks; report dataset coverage and data dates |
 
 ### Resources
@@ -44,16 +52,17 @@ Three UNESCO datasets from the UNESCO Data Hub: the World Heritage List, the Int
 | `unesco://site/{id_no}` | One World Heritage site record |
 | `unesco://intangible-heritage/{ich_ref}` | One intangible heritage element record |
 | `unesco://biosphere-reserve/{mab_id}` | One biosphere reserve record |
+| `unesco://geopark/{ugg_id}` | One UNESCO Global Geopark record |
 
-Each resource mirrors a get tool, so tool-only clients lose nothing.
+Each resource mirrors a get tool.
 
 ## Capability reference
 
 ### `unesco_search_sites` <sub>tool</sub>
 
-- Filters: `query`, `country` (ISO 3166-1 alpha-2 or alpha-3), `category`, `region`, `criteria` (every listed criterion required), `in_danger`, `transboundary`, `inscribed_from` / `inscribed_to`, and `near` (`latitude`, `longitude`, `radius_km` up to 5000, default 100)
-- Up to 50 sites per page (default 20), continued with `next_cursor`; `sort` takes `relevance`, `name`, `inscribed_newest`, `inscribed_oldest`, `area_largest`, `danger_listed_newest`, or `distance`
-- `in_danger: true` is the List of World Heritage in Danger; `totalCount` and `facets` (category, region, Danger status, criteria, top 10 countries) cover the whole match, and rows carry `matched_in` and `distance_km` when `query` or `near` is set
+- Filters: `query`, `country` (ISO 3166-1 alpha-2 or alpha-3), `category`, `region`, `criteria` (every listed criterion required), `in_danger`, `transboundary`, `inscribed_from` / `inscribed_to`, and `near` (`latitude`, `longitude`, `radius_km` up to 5000, default 100), which matches a site through its representative point or any of its components
+- Up to 50 sites per page (default 20), continued with `next_cursor`; `sort` takes `relevance`, `name`, `inscribed_newest`, `inscribed_oldest`, `area_largest`, `danger_listed_newest`, or `distance`; `include_description: false` leaves row descriptions out
+- `in_danger: true` is the List of World Heritage in Danger; `totalCount` and `facets` (category, region, Danger status, criteria, top 10 countries) cover the whole match; rows carry `matched_in` when `query` is set, and `distance_km` to the nearest of the site's points (with `nearest_component` when a component is nearer) when `near` is set
 
 ---
 
@@ -83,7 +92,7 @@ Each resource mirrors a get tool, so tool-only clients lose nothing.
 ### `unesco_search_biosphere_reserves` <sub>tool</sub>
 
 - Filters: `query` (name, introduction, and ecological or socio-economic text; there is no biome field, so search habitat words), `country`, `region`, `regional_network` (name or acronym), `transboundary`, `sids`, `designated_from` / `designated_to`, and `near`
-- Up to 50 reserves per page (default 20), continued with `next_cursor`; `sort` takes `relevance`, `name`, `designated_newest`, `designated_oldest`, `area_largest`, or `distance`
+- Up to 50 reserves per page (default 20), continued with `next_cursor`; `sort` takes `relevance`, `name`, `designated_newest`, `designated_oldest`, `area_largest`, or `distance`; `include_description: false` leaves row introductions out
 - A transboundary reserve appears once per participating country, each with its own `mab_id`; `facets` cover region, regional network, transboundary and SIDS status, and the top 10 countries
 
 ---
@@ -96,32 +105,50 @@ Each resource mirrors a get tool, so tool-only clients lose nothing.
 
 ---
 
+### `unesco_search_geoparks` <sub>tool</sub>
+
+- Filters: `query` (name, introduction, description, and community account; search landform words such as volcanic or karst), `country`, `transnational`, `designated_from` / `designated_to`, and `near`, measured to each geopark's one point
+- Up to 50 geoparks per page (default 20), continued with `next_cursor`; `sort` takes `relevance`, `name`, `designated_newest`, `designated_oldest`, `area_largest`, or `distance`; `include_description: false` leaves row introductions out
+- A transnational geopark is one row listing each of its countries; `facets` cover transnational status and the top 10 countries; a year bound whose range starts at or before 2015 adds a `notice` that geoparks recognized before the designation existed are dated 2015
+
+---
+
+### `unesco_get_geopark` <sub>tool</sub>
+
+- One geopark by `ugg_id` (such as `EUFR10`), in any case
+- Countries, designation year, transnational status, area and population as recorded (`population` is absent when UNESCO records none), coordinates, introduction, description, the account of sustaining local communities, website, and UNESCO page; an unknown id fails as `geopark_not_found`
+
+---
+
 ### `unesco_list_reference` <sub>tool</sub>
 
 - `topic`: `criteria`, `countries`, `regions`, `intangible_lists`, `biosphere_networks`, or `datasets`
-- `filter` keeps matching rows; on `countries`, a country name, an ISO code, or a common former name returns the codes every `country` input accepts
+- `filter` keeps matching rows; on `countries`, a country name, an ISO code, or a common former name returns the codes every `country` input accepts, with the country's count of sites, intangible elements, reserves, and geoparks
 - `datasets` reports each dataset's record count, `data_as_of`, license, attribution line, and coverage notes
 
 ---
 
 ### `unesco://site/{id_no}` <sub>resource</sub>
 
-- The `unesco_get_site` record with up to 20 components (`components_total` carries the full count), plus `sources`, as `application/json`
-- `id_no` comes from `unesco_search_sites`
+- The `unesco_get_site` record with up to 20 components (`components_total` carries the full count), plus `sources`, as `application/json`; `id_no` comes from `unesco_search_sites`
 
 ---
 
 ### `unesco://intangible-heritage/{ich_ref}` <sub>resource</sub>
 
-- The `unesco_get_intangible_heritage_element` record plus `sources`, as `application/json`
-- `ich_ref` comes from `unesco_search_intangible_heritage`
+- The `unesco_get_intangible_heritage_element` record plus `sources`, as `application/json`; `ich_ref` comes from `unesco_search_intangible_heritage`
 
 ---
 
 ### `unesco://biosphere-reserve/{mab_id}` <sub>resource</sub>
 
-- The `unesco_get_biosphere_reserve` record plus `sources`, as `application/json`
-- `mab_id` comes from `unesco_search_biosphere_reserves`; percent-encode an id that holds non-ASCII letters
+- The `unesco_get_biosphere_reserve` record plus `sources`, as `application/json`; `mab_id` comes from `unesco_search_biosphere_reserves`, percent-encoded when it holds non-ASCII letters
+
+---
+
+### `unesco://geopark/{ugg_id}` <sub>resource</sub>
+
+- The `unesco_get_geopark` record plus `sources`, as `application/json`; `ugg_id` comes from `unesco_search_geoparks`
 
 ## Features
 
@@ -129,28 +156,44 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 
 UNESCO-specific:
 
-- Three UNESCO Data Hub datasets: the World Heritage List (`whc001`), the Intangible Heritage List (`ich001`), and the Man and the Biosphere Programme (`mab001`)
-- Each dataset loads on first use as an in-memory snapshot (two upstream requests) and refreshes every 24 hours; searching, facets, and distance run locally, and a failed refresh keeps serving the previous snapshot
+- Datasets `whc001` (World Heritage List), `ich001` (Intangible Heritage List), `mab001` (Man and the Biosphere Programme), and `eg0001` (UNESCO Global Geoparks) each load on first use as an in-memory snapshot (two upstream requests) and refresh every 24 hours; searching, facets, and distance run locally, and a failed refresh keeps serving the previous snapshot
 - Upstream traffic is paced at two concurrent requests and at most 200 a day, with a cooldown after a 429 that honors `Retry-After`
 - Criterion (vi), which UNESCO's criteria fields omit, is inferred from each site's statement of Outstanding Universal Value and marked as inferred wherever it appears
-- Country inputs take ISO 3166-1 alpha-2 or alpha-3 codes in any case and match every transboundary site or multinational element a country takes part in; site and element ids also accept their UNESCO page URLs
+- Country inputs take ISO 3166-1 alpha-2 or alpha-3 codes in any case and match every transboundary site, multinational element, or transnational geopark a country takes part in; site and element ids also accept their UNESCO page URLs
 
 Agent-friendly output:
 
 - Attribution on every response: `sources` names each dataset with its `data_as_of` date, license, and credit line
 - Search results report the whole match: `totalCount`, `facets`, and an `applied_filters` echo of the filters and sort the server ran
-- Keyword matching is word-prefix with every word required, and `matched_in` says which field tier matched; a zero-hit `notice` names the filter whose removal would match the most records
-- Typed error contracts (`unknown_country`, `invalid_year_range`, `sort_needs_input`, `cursor_mismatch`, `*_not_found`, `snapshot_unavailable` with `retryAfter`) carry a recovery hint naming the next call
+- Keyword matching is word-prefix with every word required (up to 16 distinct words), and `matched_in` says which field tier matched; a zero-hit `notice` names the filter whose removal would match the most records
+- Typed errors (`unknown_country`, `invalid_year_range`, `sort_needs_input`, `cursor_mismatch`, `*_not_found`, `snapshot_unavailable` with `retryAfter`) carry a recovery hint naming the next call
 
 ## Data and licensing
 
-All three datasets come from the [UNESCO Data Hub](https://data.unesco.org) and are licensed [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). Credit UNESCO when you reuse the data; every response's `sources` block carries a ready-made credit line. Under ShareAlike, adapted data must be shared under the same license.
+All four datasets come from the [UNESCO Data Hub](https://data.unesco.org) and are licensed [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). Credit UNESCO when you reuse the data; every response's `sources` block carries a ready-made credit line. Under ShareAlike, adapted data must be shared under the same license.
 
 Images are not covered by that license. Each World Heritage and intangible heritage image keeps its own copyright, and its holder and photographer travel with the image record. The server returns image links but never fetches or proxies them.
 
 This server is an independent project and is not affiliated with or endorsed by UNESCO.
 
 ## Getting started
+
+### Public Hosted Instance
+
+A public instance is available at `https://unesco-heritage.caseyjhand.com/mcp` — no installation required. Point any MCP client at it via Streamable HTTP:
+
+```json
+{
+  "mcpServers": {
+    "unesco-heritage-mcp-server": {
+      "type": "streamable-http",
+      "url": "https://unesco-heritage.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+### Self-Hosted / Local
 
 Add the following to your MCP client configuration file.
 
@@ -284,9 +327,9 @@ See [`.env.example`](./.env.example) for the common framework overrides.
 
 | Directory | Purpose |
 |:---|:---|
-| `src/index.ts` | `createApp()` entry point: registers the tools and resources, sets the server instructions, and starts and stops the service. |
-| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). Seven tools across the three datasets. |
-| `src/mcp-server/resources` | Resource definitions. One record resource per dataset. |
+| `src/index.ts` | `createApp()` entry point: registers the tools and resources, serves the server instructions from `src/mcp-server/instructions.ts`, and starts and stops the service. |
+| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). |
+| `src/mcp-server/resources` | One record resource per dataset. |
 | `src/mcp-server/shared` | Input schemas and normalizers, enrichment fields, and markdown helpers shared by the tools and resources. |
 | `src/services/unesco-datahub` | UNESCO Data Hub service: snapshot loading and refresh, row validation and repair, search and facets, the ISO 3166 table, and vocabularies. |
 | `tests/` | Unit tests over synthetic fixtures, mirroring the `src/` structure. |
