@@ -1,5 +1,5 @@
 /**
- * @fileoverview Pure search helpers over snapshot records, shared by the three
+ * @fileoverview Pure search helpers over snapshot records, shared by the four
  * search tools and the reference `filter`: text folding, word-prefix and CJK
  * matching with cumulative field tiers, named filters and the single-removal
  * probe, facet counting, haversine distance, sort comparators with id

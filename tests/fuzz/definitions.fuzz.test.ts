@@ -10,13 +10,16 @@
 import { type FuzzReport, fuzzResource, fuzzTool } from '@cyanheads/mcp-ts-core/testing/fuzz';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { biosphereReserveResource } from '@/mcp-server/resources/definitions/biosphere-reserve.resource.js';
+import { geoparkResource } from '@/mcp-server/resources/definitions/geopark.resource.js';
 import { intangibleHeritageElementResource } from '@/mcp-server/resources/definitions/intangible-heritage-element.resource.js';
 import { siteResource } from '@/mcp-server/resources/definitions/site.resource.js';
 import { getBiosphereReserveTool } from '@/mcp-server/tools/definitions/get-biosphere-reserve.tool.js';
+import { getGeoparkTool } from '@/mcp-server/tools/definitions/get-geopark.tool.js';
 import { getIntangibleHeritageElementTool } from '@/mcp-server/tools/definitions/get-intangible-heritage-element.tool.js';
 import { getSiteTool } from '@/mcp-server/tools/definitions/get-site.tool.js';
 import { listReferenceTool } from '@/mcp-server/tools/definitions/list-reference.tool.js';
 import { searchBiosphereReservesTool } from '@/mcp-server/tools/definitions/search-biosphere-reserves.tool.js';
+import { searchGeoparksTool } from '@/mcp-server/tools/definitions/search-geoparks.tool.js';
 import { searchIntangibleHeritageTool } from '@/mcp-server/tools/definitions/search-intangible-heritage.tool.js';
 import { searchSitesTool } from '@/mcp-server/tools/definitions/search-sites.tool.js';
 import { getUnescoDataHubService } from '@/services/unesco-datahub/unesco-datahub-service.js';
@@ -29,9 +32,16 @@ const TOOLS = [
   getIntangibleHeritageElementTool,
   searchBiosphereReservesTool,
   getBiosphereReserveTool,
+  searchGeoparksTool,
+  getGeoparkTool,
   listReferenceTool,
 ];
-const RESOURCES = [siteResource, intangibleHeritageElementResource, biosphereReserveResource];
+const RESOURCES = [
+  siteResource,
+  intangibleHeritageElementResource,
+  biosphereReserveResource,
+  geoparkResource,
+];
 
 /** A clean report, with each crashing input and its error in the failure message. */
 function expectClean(report: FuzzReport): void {

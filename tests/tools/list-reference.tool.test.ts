@@ -7,14 +7,14 @@
  * @module tests/tools/list-reference.tool.test
  */
 
-import type { z } from '@cyanheads/mcp-ts-core';
+import { z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listReferenceTool } from '@/mcp-server/tools/definitions/list-reference.tool.js';
-import { CRITERIA } from '@/services/unesco-datahub/vocabulary.js';
+import { CRITERIA, DATASET_IDS } from '@/services/unesco-datahub/vocabulary.js';
 import { DATA_AS_OF, type HubOptions, httpFailure } from '../fixtures/hub.js';
-import { ICH_ROWS, ichRow, WHC_ROWS, whcRow } from '../fixtures/rows.js';
+import { EG_ROWS, egRow, ICH_ROWS, ichRow, WHC_ROWS, whcRow } from '../fixtures/rows.js';
 import {
   allText,
   disposeServiceAfterEach,
@@ -38,6 +38,10 @@ const list = async (input: Record<string, unknown>) => {
 
 const NO_ICH: HubOptions = {
   intercept: (call) => (call.dataset === 'ich001' ? httpFailure(404) : undefined),
+};
+
+const NO_EG: HubOptions = {
+  intercept: (call) => (call.dataset === 'eg0001' ? httpFailure(404) : undefined),
 };
 
 describe('unesco_list_reference — criteria', () => {
@@ -106,12 +110,13 @@ describe('unesco_list_reference — countries', () => {
 
   it('lists every country in any dataset, sorted by name, with the code-less party last here', async () => {
     const { out } = await list({ topic: 'countries' });
-    expect(out.countries).toHaveLength(8);
+    expect(out.countries).toHaveLength(9);
     expect(out.countries?.map((c) => c.name)).toEqual([
       'Belgium',
       'Ethiopia',
       'France',
       'Germany',
+      'Italy',
       'Japan',
       'Peru',
       'Poland',
@@ -129,17 +134,85 @@ describe('unesco_list_reference — countries', () => {
       heritage_site_count: 32,
       intangible_element_count: 1,
       biosphere_reserve_count: 1,
+      geopark_count: 1,
     });
     expect(byCode.DE).toMatchObject({
       alpha3: 'DEU',
       heritage_site_count: 3,
       intangible_element_count: 0,
       biosphere_reserve_count: 1,
+      geopark_count: 1,
     });
-    expect(byCode.PL).toMatchObject({ heritage_site_count: 1, biosphere_reserve_count: 1 });
-    expect(byCode.ET).toMatchObject({ heritage_site_count: 1, intangible_element_count: 1 });
-    expect(byCode.JP).toMatchObject({ heritage_site_count: 1, intangible_element_count: 1 });
-    expect(byCode.PE).toMatchObject({ heritage_site_count: 1, biosphere_reserve_count: 1 });
+    expect(byCode.PL).toMatchObject({
+      heritage_site_count: 1,
+      biosphere_reserve_count: 1,
+      geopark_count: 1,
+    });
+    expect(byCode.ET).toMatchObject({
+      heritage_site_count: 1,
+      intangible_element_count: 1,
+      geopark_count: 0,
+    });
+    expect(byCode.JP).toMatchObject({
+      heritage_site_count: 1,
+      intangible_element_count: 1,
+      geopark_count: 1,
+    });
+    expect(byCode.PE).toMatchObject({
+      heritage_site_count: 1,
+      biosphere_reserve_count: 1,
+      geopark_count: 1,
+    });
+  });
+
+  it('lists a country that only a geopark carries, with no UNESCO spelling', async () => {
+    const { out } = await list({ topic: 'countries' });
+    const italy = out.countries?.find((c) => c.code === 'IT');
+    expect(italy).toEqual({
+      code: 'IT',
+      alpha3: 'ITA',
+      name: 'Italy',
+      heritage_site_count: 0,
+      intangible_element_count: 0,
+      biosphere_reserve_count: 0,
+      geopark_count: 1,
+    });
+  });
+
+  it('counts a transnational geopark once for each of its countries', async () => {
+    useHub({
+      rows: {
+        eg0001: [
+          egRow({ ugg_id: 'EUA301', countries: ['HU,SK'], transnational: 'True' }),
+          egRow({ ugg_id: 'EUSK02', countries: ['SK'] }),
+          egRow({ ugg_id: 'EUFR03', countries: ['FR'] }),
+        ],
+      },
+    });
+    const { out } = await list({ topic: 'countries' });
+    const byCode = Object.fromEntries((out.countries ?? []).map((c) => [c.code ?? 'none', c]));
+    expect(byCode.SK).toEqual({
+      code: 'SK',
+      alpha3: 'SVK',
+      name: 'Slovakia',
+      heritage_site_count: 0,
+      intangible_element_count: 0,
+      biosphere_reserve_count: 0,
+      geopark_count: 2,
+    });
+    expect(byCode.HU).toMatchObject({ geopark_count: 1, heritage_site_count: 0 });
+    expect(byCode.FR?.geopark_count).toBe(1);
+    expect(byCode.DE?.geopark_count).toBe(0);
+    const total = (out.countries ?? []).reduce((sum, c) => sum + c.geopark_count, 0);
+    expect(total).toBe(4);
+  });
+
+  it('counts zero geoparks everywhere over an empty geopark dataset', async () => {
+    useHub({ rows: { eg0001: [] } });
+    const { out } = await list({ topic: 'countries' });
+    expect(out.countries?.map((c) => c.code)).not.toContain('IT');
+    expect(out.countries).toHaveLength(8);
+    expect(out.countries?.every((c) => c.geopark_count === 0)).toBe(true);
   });
 
   it('gives a country only an intangible element lists no UNESCO spelling', async () => {
@@ -164,13 +237,16 @@ describe('unesco_list_reference — countries', () => {
       heritage_site_count: 1,
       intangible_element_count: 0,
       biosphere_reserve_count: 0,
+      geopark_count: 0,
     });
   });
 
-  it('attributes all three datasets', async () => {
+  it('attributes all four datasets', async () => {
+    const hub = useHub();
     const { out } = await list({ topic: 'countries' });
-    expect(out.sources.map((s) => s.dataset)).toEqual(['whc001', 'ich001', 'mab001']);
+    expect(out.sources.map((s) => s.dataset)).toEqual(['whc001', 'ich001', 'mab001', 'eg0001']);
     expect(out.sources.every((s) => s.data_as_of === DATA_AS_OF)).toBe(true);
+    expect(hub.callsFor('eg0001', 'export')).toHaveLength(1);
   });
 
   it('still lists countries from the other datasets when the World Heritage dataset is empty', async () => {
@@ -255,6 +331,7 @@ describe('unesco_list_reference — regions, lists, networks, datasets', () => {
       ['whc001', 39],
       ['ich001', 3],
       ['mab001', 4],
+      ['eg0001', EG_ROWS.length],
     ]);
     for (const d of out.datasets ?? []) {
       expect(d).toMatchObject({
@@ -270,6 +347,51 @@ describe('unesco_list_reference — regions, lists, networks, datasets', () => {
     expect(ich?.coverage_notes[0]).toBe(
       'The 1 element dated 2008 carries the year of incorporation into the Representative List, not the earlier proclamation.',
     );
+  });
+
+  it('reports the geopark dataset with its title, attribution, and coverage notes', async () => {
+    const { out } = await list({ topic: 'datasets' });
+    const eg = out.datasets?.find((d) => d.dataset === 'eg0001');
+    expect(eg).toEqual({
+      dataset: 'eg0001',
+      title: 'UNESCO Global Geoparks',
+      records: 5,
+      data_as_of: DATA_AS_OF,
+      license: 'CC BY-SA 4.0',
+      license_url: 'https://creativecommons.org/licenses/by-sa/4.0/',
+      attribution: 'UNESCO — UNESCO Global Geoparks (eg0001), UNESCO Data Hub, CC BY-SA 4.0',
+      coverage_notes: [
+        'The 2 geoparks dated 2015 carry the year UNESCO created the UNESCO Global Geopark designation, not the year each joined the Global Geoparks Network, which the data does not record.',
+        'Areas and populations are passed through as recorded; population is absent where UNESCO records no figure, and 0 can mean unreported.',
+        'Images are omitted, because the dataset records no image credit.',
+      ],
+    });
+    expect(out.sources.map((s) => s.dataset)).toEqual(['whc001', 'ich001', 'mab001', 'eg0001']);
+  });
+
+  it('counts the 2015-dated geoparks from the loaded snapshot, singular for one', async () => {
+    useHub({
+      rows: {
+        eg0001: [
+          egRow({ ugg_id: 'EUFR01', date: '2015-01-01' }),
+          egRow({ ugg_id: 'EUFR02', date: '2016-01-01' }),
+        ],
+      },
+    });
+    const { out } = await list({ topic: 'datasets' });
+    const eg = out.datasets?.find((d) => d.dataset === 'eg0001');
+    expect(eg?.records).toBe(2);
+    expect(eg?.coverage_notes[0]).toBe(
+      'The 1 geopark dated 2015 carries the year UNESCO created the UNESCO Global Geopark designation, not the year it joined the Global Geoparks Network, which the data does not record.',
+    );
+  });
+
+  it('reports an empty geopark dataset as zero records with its notes', async () => {
+    useHub({ rows: { eg0001: [] } });
+    const { out } = await list({ topic: 'datasets' });
+    const eg = out.datasets?.find((d) => d.dataset === 'eg0001');
+    expect(eg?.records).toBe(0);
+    expect(eg?.coverage_notes[0]).toMatch(/^The 0 geoparks dated 2015 carry /);
   });
 });
 
@@ -321,6 +443,15 @@ describe('unesco_list_reference — filter', () => {
     expect(
       (await list({ topic: 'datasets', filter: 'whc001' })).out.datasets?.map((d) => d.dataset),
     ).toEqual(['whc001']);
+    expect(
+      (await list({ topic: 'datasets', filter: 'geoparks' })).out.datasets?.map((d) => d.dataset),
+    ).toEqual(['eg0001']);
+    expect(
+      (await list({ topic: 'countries', filter: 'italy' })).out.countries?.map((c) => [
+        c.code,
+        c.geopark_count,
+      ]),
+    ).toEqual([['IT', 1]]);
   });
 
   it.each(['', '   '])('reads a blank filter %j as unset', async (filter) => {
@@ -340,7 +471,7 @@ describe('unesco_list_reference — filter', () => {
     expect(out.notice).toBe(
       'No countries entry contains every word of "nomatchword". Call unesco_list_reference with topic countries and no filter to see every entry.',
     );
-    expect(out.sources).toHaveLength(3);
+    expect(out.sources).toHaveLength(4);
     expect(text).toContain('_No entries._');
     expect(text).toContain(out.notice as string);
   });
@@ -354,9 +485,9 @@ describe('unesco_list_reference — filter', () => {
   it('returns a partial page with no notice when the filter matches some entries', async () => {
     const { out } = await list({ topic: 'countries', filter: 'p' });
     expect(out.countries?.length).toBeGreaterThan(0);
-    expect(out.countries?.length).toBeLessThan(8);
+    expect(out.countries?.length).toBeLessThan(9);
     expect(out.notice).toBeUndefined();
-    expect(out.sources).toHaveLength(3);
+    expect(out.sources).toHaveLength(4);
   });
 
   it('gives each topic its own notice wording', async () => {
@@ -417,6 +548,19 @@ describe('unesco_list_reference — countries filter: codes and alternate names'
     expect(out.notice).toBe(
       'AQ (Antarctica) is an assigned ISO 3166-1 code, but no UNESCO dataset lists that country.',
     );
+  });
+
+  it('keeps a code that only a transnational geopark carries', async () => {
+    useHub({
+      rows: {
+        eg0001: [egRow({ ugg_id: 'EUA301', countries: ['HU,SK'], transnational: 'True' })],
+      },
+    });
+    const { out } = await list({ topic: 'countries', filter: 'svk' });
+    expect(out.countries).toEqual([
+      expect.objectContaining({ code: 'SK', heritage_site_count: 0, geopark_count: 1 }),
+    ]);
+    expect(out.notice).toBeUndefined();
   });
 
   it('keeps word-prefix matching for a short filter that is not an assigned code', async () => {
@@ -495,6 +639,36 @@ describe('unesco_list_reference — declared errors and dataset independence', (
       const { out } = await list({ topic });
       expect(out.topic).toBe(topic);
       expect(out.sources.every((s) => s.dataset !== 'ich001')).toBe(true);
+    },
+  );
+
+  it.each(['countries', 'datasets'])(
+    'fails topic %s as a whole with the geopark dataset named when it cannot load',
+    async (topic) => {
+      useHub(NO_EG);
+      const result = await runToolContract(listReferenceTool, { topic } as never);
+      const error = errorOf(result);
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expect(error.data).toMatchObject({
+        reason: 'snapshot_unavailable',
+        dataset: 'eg0001',
+        retryable: true,
+        retryAfter: 60,
+        recovery: { hint: expect.stringContaining('unesco_list_reference') },
+      });
+      expect(result.structuredContent).not.toHaveProperty(topic);
+      expect(allText(result)).toContain('UNESCO Global Geoparks (eg0001)');
+    },
+  );
+
+  it.each(['criteria', 'regions', 'intangible_lists', 'biosphere_networks'])(
+    'serves topic %s without reading the geopark dataset, even while it is down',
+    async (topic) => {
+      const hub = useHub(NO_EG);
+      const { out } = await list({ topic });
+      expect(out.topic).toBe(topic);
+      expect(out.sources.every((s) => s.dataset !== 'eg0001')).toBe(true);
+      expect(hub.callsFor('eg0001')).toHaveLength(0);
     },
   );
 
@@ -589,14 +763,18 @@ describe('unesco_list_reference — format() parity and text safety', () => {
   it('renders every country row, with the no-code and no-spelling fallbacks', async () => {
     const { result, out } = await list({ topic: 'countries' });
     const body = textBlocks(result)[0] ?? '';
+    expect(body).toContain(
+      '| Code | Alpha-3 | Name | UNESCO name | World Heritage sites | Intangible elements | Biosphere reserves | Geoparks |',
+    );
     for (const c of out.countries ?? []) {
       expect(body).toContain(
-        `| ${c.code ?? 'No ISO code'} | ${c.alpha3 ?? '—'} | ${c.name} | ${c.unesco_name ?? '—'} | ${c.heritage_site_count} | ${c.intangible_element_count} | ${c.biosphere_reserve_count} |`,
+        `| ${c.code ?? 'No ISO code'} | ${c.alpha3 ?? '—'} | ${c.name} | ${c.unesco_name ?? '—'} | ${c.heritage_site_count} | ${c.intangible_element_count} | ${c.biosphere_reserve_count} | ${c.geopark_count} |`,
       );
     }
-    expect(body).toContain('| BE | BEL | Belgium | — | 0 | 1 | 0 |');
+    expect(body).toContain('| BE | BEL | Belgium | — | 0 | 1 | 0 | 0 |');
+    expect(body).toContain('| IT | ITA | Italy | — | 0 | 0 | 0 | 1 |');
     expect(body).toContain(
-      '| No ISO code | — | Synthetic Party Name | Synthetic Party Name | 1 | 0 | 0 |',
+      '| No ISO code | — | Synthetic Party Name | Synthetic Party Name | 1 | 0 | 0 | 0 |',
     );
   });
 
@@ -623,9 +801,21 @@ describe('unesco_list_reference — format() parity and text safety', () => {
 
   it('closes with one source line per attributed dataset', async () => {
     const { text } = await list({ topic: 'countries' });
-    for (const dataset of ['whc001', 'ich001', 'mab001']) {
+    for (const dataset of ['whc001', 'ich001', 'mab001', 'eg0001']) {
       expect(text).toContain(`(${dataset}), data as of ${DATA_AS_OF}, CC BY-SA 4.0`);
     }
+    expect(text).toContain(
+      `Source: UNESCO — UNESCO Global Geoparks (eg0001), data as of ${DATA_AS_OF}, CC BY-SA 4.0`,
+    );
+  });
+
+  it('advertises every dataset id in the sources enum', () => {
+    const sources = listReferenceTool.enrichment?.sources;
+    expect(sources).toBeDefined();
+    expect(z.toJSONSchema(sources as z.ZodType)).toMatchObject({
+      items: { properties: { dataset: { enum: [...DATASET_IDS] } } },
+    });
+    expect(DATASET_IDS).toContain('eg0001');
   });
 
   it('keeps a code-less State Party name with a pipe and line breaks inside one table cell', async () => {
@@ -646,7 +836,7 @@ describe('unesco_list_reference — format() parity and text safety', () => {
     const row = rows[0] as string;
     expect(row).toContain('Party \\| One # Two\\\\Three');
     const cells = row.split(/(?<!\\)\|/);
-    expect(cells).toHaveLength(9);
+    expect(cells).toHaveLength(10);
     expect(text.split('\n').some((l) => l.startsWith('# Two'))).toBe(false);
   });
 

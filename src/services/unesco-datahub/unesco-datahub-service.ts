@@ -1,7 +1,7 @@
 /**
- * @fileoverview Snapshot lifecycle for the three UNESCO Data Hub datasets
- * (`whc001`, `ich001`, `mab001`): lazy load on first use, single-flight, 24 h
- * TTL with stale-while-revalidate, failure backoff, and the resilient load
+ * @fileoverview Snapshot lifecycle for the four UNESCO Data Hub datasets
+ * (`whc001`, `ich001`, `mab001`, `eg0001`): lazy load on first use, single-flight,
+ * 24 h TTL with stale-while-revalidate, failure backoff, and the resilient load
  * pipeline (pacer inside `withRetry` under a total deadline, byte-budgeted body
  * reads, strict row validation, row-count and license checks, index build).
  * @module services/unesco-datahub/unesco-datahub-service
@@ -22,11 +22,14 @@ import {
 } from '@cyanheads/mcp-ts-core/utils';
 import {
   DatasetMetaSchema,
+  EG_FIELDS,
+  EgRowSchema,
   ICH_FIELDS,
   IchRowSchema,
   MAB_FIELDS,
   MabRowSchema,
   toBiosphereReserve,
+  toGeopark,
   toHeritageSite,
   toIntangibleElement,
   WHC_FIELDS,
@@ -35,6 +38,7 @@ import {
 import { foldText, foldTier } from './search.js';
 import type {
   BiosphereSnapshot,
+  GeoparkSnapshot,
   HeritageSite,
   HeritageSnapshot,
   IntangibleSnapshot,
@@ -59,6 +63,7 @@ const EXPORT_FIELDS: Readonly<Record<DatasetId, readonly string[]>> = {
   whc001: WHC_FIELDS,
   ich001: ICH_FIELDS,
   mab001: MAB_FIELDS,
+  eg0001: EG_FIELDS,
 };
 
 const MiB = 1_048_576;
@@ -68,6 +73,7 @@ const EXPORT_MAX_BYTES: Readonly<Record<DatasetId, number>> = {
   whc001: 64 * MiB,
   ich001: 16 * MiB,
   mab001: 16 * MiB,
+  eg0001: 8 * MiB,
 };
 
 /** Constructor seams for tests; production uses the defaults. */
@@ -116,6 +122,7 @@ export class UnescoDataHubService {
   private readonly heritage: Slot<HeritageSnapshot> = { failures: 0, nextAttemptAt: 0 };
   private readonly intangible: Slot<IntangibleSnapshot> = { failures: 0, nextAttemptAt: 0 };
   private readonly biosphere: Slot<BiosphereSnapshot> = { failures: 0, nextAttemptAt: 0 };
+  private readonly geoparks: Slot<GeoparkSnapshot> = { failures: 0, nextAttemptAt: 0 };
 
   constructor(options: UnescoDataHubServiceOptions = {}) {
     this.get = options.get ?? fetchWithTimeout;
@@ -147,6 +154,13 @@ export class UnescoDataHubService {
   getBiosphere(ctx: Context): Promise<BiosphereSnapshot> {
     return this.acquire('mab001', this.biosphere, ctx, (rows, meta) =>
       this.buildBiosphere(rows, meta),
+    );
+  }
+
+  /** The UNESCO Global Geoparks snapshot, loading it on first use. */
+  getGeoparks(ctx: Context): Promise<GeoparkSnapshot> {
+    return this.acquire('eg0001', this.geoparks, ctx, (rows, meta) =>
+      this.buildGeoparks(rows, meta),
     );
   }
 
@@ -400,6 +414,21 @@ export class UnescoDataHubService {
         foldTier(r.name),
         foldTier(r.introduction),
         foldTier(r.ecological_characteristics, r.socio_economic_characteristics),
+      ],
+    });
+  }
+
+  private buildGeoparks(rows: unknown[], meta: DatasetMeta): GeoparkSnapshot {
+    const records = rows.map((raw, index) =>
+      mapRow('eg0001', index, () => toGeopark(parseRow('eg0001', EgRowSchema, raw, index))),
+    );
+    return this.index('eg0001', records, meta, {
+      id: (g) => g.ugg_id,
+      codes: (g) => g.country_codes,
+      tiers: (g) => [
+        foldTier(g.name),
+        foldTier(g.introduction),
+        foldTier(g.description, g.sustaining_local_communities),
       ],
     });
   }

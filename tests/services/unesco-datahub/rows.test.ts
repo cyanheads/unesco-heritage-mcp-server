@@ -12,6 +12,8 @@ import { describe, expect, it } from 'vitest';
 import {
   cleanText,
   DatasetMetaSchema,
+  EG_FIELDS,
+  EgRowSchema,
   ICH_FIELDS,
   IchRowSchema,
   justificationNamesVi,
@@ -22,13 +24,22 @@ import {
   parseFusedYears,
   parseWhcSites,
   toBiosphereReserve,
+  toGeopark,
   toHeritageSite,
   toIntangibleElement,
   WHC_FIELDS,
   WhcRowSchema,
   yearsIn,
 } from '@/services/unesco-datahub/rows.js';
-import { componentsList, ichRow, mabRow, WHC_ROWS, whcRow } from '../../fixtures/rows.js';
+import {
+  componentsList,
+  EG_ROWS,
+  egRow,
+  ichRow,
+  mabRow,
+  WHC_ROWS,
+  whcRow,
+} from '../../fixtures/rows.js';
 
 const whcById = (id: string) => {
   const row = WHC_ROWS.find((r) => r.id_no === id);
@@ -49,6 +60,11 @@ describe('field allowlists', () => {
     expect(Object.keys(whcRow()).sort()).toEqual([...WHC_FIELDS].sort());
     expect(Object.keys(ichRow()).sort()).toEqual([...ICH_FIELDS].sort());
     expect(Object.keys(mabRow()).sort()).toEqual([...MAB_FIELDS].sort());
+  });
+
+  it('eg0001 select list equals the strict row schema keys and the row builder', () => {
+    expect([...EG_FIELDS].sort()).toEqual(Object.keys(EgRowSchema.shape).sort());
+    expect(Object.keys(egRow()).sort()).toEqual([...EG_FIELDS].sort());
   });
 });
 
@@ -81,18 +97,106 @@ describe('cleanText', () => {
   });
 
   it('keeps unknown and invalid entities as written', () => {
-    expect(cleanText('a&nbsp;b &#0; &#1114112; &#xD800;x')).toContain('&nbsp;');
+    expect(cleanText('a&hellip;b &#0; &#1114112; &#xD800;x')).toContain('&hellip;');
     expect(cleanText('&#0;')).toBe('&#0;');
     expect(cleanText('&#1114112;')).toBe('&#1114112;');
   });
 
   it('does not double-decode', () => {
     expect(cleanText('&amp;lt;')).toBe('&lt;');
+    expect(cleanText('&amp;lt;li&amp;gt;item&amp;lt;/li&amp;gt;')).toBe(
+      '&lt;li&gt;item&lt;/li&gt;',
+    );
   });
 
   it('trims the result and preserves inner newlines', () => {
     expect(cleanText('  a\nb  ')).toBe('a\nb');
     expect(cleanText('   ')).toBe('');
+  });
+
+  it('keeps inner whitespace runs and blank lines as written', () => {
+    expect(cleanText('First.\n\nSecond.  Third.\t\tEnd.')).toBe(
+      'First.\n\nSecond.  Third.\t\tEnd.',
+    );
+  });
+
+  it('decodes an encoded angle bracket in prose to a literal one, stripping nothing around it', () => {
+    expect(cleanText('depths &lt; 5 km and &gt;2,200 m')).toBe('depths < 5 km and >2,200 m');
+    expect(cleanText('forest (<1,300 masl), <em>scrub</em> (>2,200 masl)')).toBe(
+      'forest (<1,300 masl), scrub (>2,200 masl)',
+    );
+  });
+
+  it('decodes an encoded inline tag to literal text rather than stripping it', () => {
+    expect(cleanText('&lt;em&gt;Old&lt;/em&gt; Town')).toBe('<em>Old</em> Town');
+  });
+
+  it('decodes &#160; and &#xA0; to a no-break space', () => {
+    expect(cleanText('a&#160;b&#xA0;c')).toBe('a\u00a0b\u00a0c');
+  });
+
+  it('decodes &nbsp; to the same no-break space, in any case', () => {
+    expect(cleanText('Lake&nbsp;Salagou and&NBSP;more')).toBe('Lake\u00a0Salagou and\u00a0more');
+  });
+
+  it('turns an entity-encoded <ul>/<li> list into one line per item', () => {
+    expect(
+      cleanText(
+        '&lt;ul&gt; &lt;li&gt;Explore the mines.&lt;/li&gt; &lt;li&gt;Follow the trail.&lt;/li&gt; &lt;/ul&gt;',
+      ),
+    ).toBe('Explore the mines.\nFollow the trail.');
+  });
+
+  it('turns a raw list the same way, any case, and keeps the text around it on its own lines', () => {
+    expect(cleanText('Highlights:<ul><li>Caves</li>\n<LI >Cliffs</LI ></ul>More text.')).toBe(
+      'Highlights:\nCaves\nCliffs\nMore text.',
+    );
+    expect(cleanText('&LT;UL&GT;&LT;LI&GT;One&LT;/LI&GT;&LT;/UL&GT;')).toBe('One');
+  });
+
+  it('cleans inline tags and entities inside list items', () => {
+    expect(
+      cleanText(
+        '&lt;ul&gt;&lt;li&gt;The &quot;<em>red</em>&quot; earth&#39;s&nbsp;quarry &amp; caves &lt; 5 km&lt;/li&gt;&lt;/ul&gt;',
+      ),
+    ).toBe('The "red" earth\'s\u00a0quarry & caves < 5 km');
+  });
+
+  it('leaves list-like text that is not a whole tag alone', () => {
+    expect(cleanText('a <list> b <lime> c <u l> d &lt;ul e')).toBe(
+      'a <list> b <lime> c <u l> d <ul e',
+    );
+  });
+
+  describe('runs in linear time on adversarial list markup', () => {
+    const fill = (unit: string, length: number) =>
+      unit.repeat(Math.ceil(length / unit.length)).slice(0, length);
+    /** Fastest of seven 10-call batches after a warm-up, in ms per call. */
+    const msPerCall = (input: string) => {
+      for (let i = 0; i < 3; i += 1) cleanText(input);
+      let best = Number.POSITIVE_INFINITY;
+      for (let sample = 0; sample < 7; sample += 1) {
+        const started = performance.now();
+        for (let i = 0; i < 10; i += 1) cleanText(input);
+        best = Math.min(best, (performance.now() - started) / 10);
+      }
+      return best;
+    };
+
+    it.each<[string, (length: number) => string]>([
+      ['a repeated raw opener with no closer', (n) => fill('<li', n)],
+      ['a repeated encoded opener with no closer', (n) => fill('&lt;li', n)],
+      ['one opener before a whitespace run with no closer', (n) => `<li${' '.repeat(n - 3)}`],
+      ['nested raw openers', (n) => fill('<ul><li>', n)],
+      ['nested encoded openers', (n) => fill('&lt;ul&gt;&lt;li&gt;', n)],
+      ['tags, whitespace, and broken openers', (n) => fill('<li>  <li  ', n)],
+      ['a whitespace run with no tag', (n) => `${' '.repeat(n - 1)}x`],
+    ])('%s: 80k characters cost under 64× what 5k cost', (_label, build) => {
+      const small = msPerCall(build(5_000));
+      const large = msPerCall(build(80_000));
+      expect(large / small).toBeLessThan(64);
+      expect(large).toBeLessThan(25);
+    });
   });
 });
 
@@ -469,6 +573,67 @@ describe('row schemas', () => {
     expect(MabRowSchema.safeParse(mabRow({ mab_id: 'A'.repeat(20) })).success).toBe(true);
     expect(MabRowSchema.safeParse(mabRow({ regional_network: null })).success).toBe(true);
   });
+
+  it('eg0001 accepts the synthetic builder row and every fixture row', () => {
+    expect(EgRowSchema.safeParse(egRow()).success).toBe(true);
+    for (const row of EG_ROWS)
+      expect(EgRowSchema.safeParse(row).success, String(row.ugg_id)).toBe(true);
+  });
+
+  it.each(['uuid', 'density', 'quote', 'main_image_url'])(
+    'eg0001 rejects the unselected field %s (a `select` the upstream ignored)',
+    (key) => {
+      expect(EgRowSchema.safeParse({ ...egRow(), [key]: null }).success).toBe(false);
+    },
+  );
+
+  it.each(['ugg_id', 'title_en', 'area_unit', 'population', 'website'])(
+    'eg0001 rejects a row missing %s',
+    (key) => {
+      const { [key]: _omitted, ...rest } = egRow();
+      expect(EgRowSchema.safeParse(rest).success).toBe(false);
+    },
+  );
+
+  it.each([
+    ['an area_unit other than ha', { area_unit: 'km2' }],
+    ['an uppercase HA area_unit', { area_unit: 'HA' }],
+    ['a null area_unit', { area_unit: null }],
+    ['a lowercase ugg_id', { ugg_id: 'eufr10' }],
+    ['a ugg_id with a separator', { ugg_id: 'EU-FR10' }],
+    ['an empty ugg_id', { ugg_id: '' }],
+    ['a 21-character ugg_id', { ugg_id: 'A'.repeat(21) }],
+    ['a lowercase country code', { countries: ['fr'] }],
+    ['a semicolon-joined countries entry', { countries: ['AT;SI'] }],
+    ['a countries entry with a one-letter code', { countries: ['A,SI'] }],
+    ['a countries entry ending in a comma', { countries: ['AT,'] }],
+    ['no countries', { countries: [] }],
+    ['a non-array countries value', { countries: 'FR' }],
+    ['transnational not True/False', { transnational: 'yes' }],
+    ['a date without month and day', { date: '2015' }],
+    ['null coordinates', { coordinates: null }],
+    ['a null url', { url: null }],
+    ['a null description', { description: null }],
+    ['a null introduction', { introduction_en: null }],
+    ['a null sustaining-communities text', { sustaining_local_communities_description: null }],
+    ['a string population', { population: '10' }],
+    ['a null area', { area_total: null }],
+  ])('eg0001 rejects %s', (_label, override) => {
+    expect(EgRowSchema.safeParse(egRow(override)).success).toBe(false);
+  });
+
+  it.each([
+    ['a null population and website (the sparse row)', { population: null, website: null }],
+    ['a zero population', { population: 0 }],
+    ['a two-digit country number', { ugg_id: 'ASCN51' }],
+    ['a transnational id', { ugg_id: 'EUA301' }],
+    ['a 20-character ugg_id', { ugg_id: 'A'.repeat(20) }],
+    ['a joined countries entry', { countries: ['AT,SI'] }],
+    ['a joined entry with a space after the comma', { countries: ['HU, SK'] }],
+    ['two separate countries entries', { countries: ['BE', 'NL'] }],
+  ])('eg0001 accepts %s', (_label, override) => {
+    expect(EgRowSchema.safeParse(egRow(override)).success).toBe(true);
+  });
 });
 
 describe('text length bounds', () => {
@@ -547,6 +712,20 @@ describe('text length bounds', () => {
   it.each(MAB_CASES)('mab001 %s holds at most %d characters', (name, max, build) => {
     expect(MabRowSchema.safeParse(mabRow({ [field(name)]: build(max) })).success).toBe(true);
     const over = MabRowSchema.safeParse(mabRow({ [field(name)]: build(max + 1) }));
+    expect(over.success).toBe(false);
+    expect(over.error?.issues[0]?.path[0]).toBe(field(name));
+  });
+
+  const EG_CASES: Case[] = [
+    ...scalar(['title_en'], NAME),
+    ['countries[]', NAME, (length: number) => [`AT,${' '.repeat(length - 5)}SI`]],
+    ...scalar(['introduction_en', 'description', 'sustaining_local_communities_description'], TEXT),
+    ...scalar(['website', 'url'], URL_LENGTH, url),
+  ];
+
+  it.each(EG_CASES)('eg0001 %s holds at most %d characters', (name, max, build) => {
+    expect(EgRowSchema.safeParse(egRow({ [field(name)]: build(max) })).success).toBe(true);
+    const over = EgRowSchema.safeParse(egRow({ [field(name)]: build(max + 1) }));
     expect(over.success).toBe(false);
     expect(over.error?.issues[0]?.path[0]).toBe(field(name));
   });
@@ -920,5 +1099,92 @@ describe('toBiosphereReserve — ids, narratives, and year lists', () => {
 
   it('fails the mapping on an out-of-range fused year', () => {
     expect(() => toBiosphereReserve(MabRowSchema.parse(mabRow({ extension: 1850 })))).toThrow();
+  });
+});
+
+describe('toGeopark', () => {
+  const geopark = (overrides: Record<string, unknown> = {}) =>
+    toGeopark(EgRowSchema.parse(egRow(overrides)));
+  const fixture = (ugg_id: string) => {
+    const row = EG_ROWS.find((r) => r.ugg_id === ugg_id);
+    if (!row) throw new Error(`fixture ${ugg_id} missing`);
+    return toGeopark(EgRowSchema.parse(row));
+  };
+
+  it('maps a full row, decoding every entity and trimming a trailing &nbsp;', () => {
+    expect(fixture('EUFR90')).toEqual({
+      ugg_id: 'EUFR90',
+      name: 'Alderfen Cliffs UNESCO Global Geopark',
+      country_codes: ['FR'],
+      countries: ['France'],
+      transnational: false,
+      designation_year: 2015,
+      area_hectares: 120_000,
+      population: 52_000,
+      latitude: 49.9,
+      longitude: 1.5,
+      introduction: `The "Alderfen" cliffs record 300 million years of the coast's history.`,
+      description: 'Chalk cliffs and fossil beds.\u00a0Synthetic sea stacks rise offshore.',
+      sustaining_local_communities:
+        'Fishing & farming villages share the coast.\u00a0Synthetic markets sell local stone.',
+      website: 'https://geopark.example.test/alderfen',
+      url: 'https://www.unesco.org/en/iggp/alderfen-cliffs-unesco-global-geopark',
+    });
+  });
+
+  it('splits the joined countries entry of a transnational geopark, with display names', () => {
+    expect(fixture('EUA190')).toMatchObject({
+      country_codes: ['DE', 'PL'],
+      countries: ['Germany', 'Poland'],
+      transnational: true,
+    });
+    expect(geopark({ countries: ['HU, SK'] }).country_codes).toEqual(['HU', 'SK']);
+    expect(geopark({ countries: ['BE', 'NL'] }).country_codes).toEqual(['BE', 'NL']);
+  });
+
+  it('reads transnational from UNESCO\'s "True"/"False" text, not from the code count', () => {
+    expect(geopark({ transnational: 'True' }).transnational).toBe(true);
+    expect(geopark({ countries: ['AT,SI'], transnational: 'False' }).transnational).toBe(false);
+  });
+
+  it('keeps a null population absent and passes a zero population through', () => {
+    expect(fixture('ASJP91')).not.toHaveProperty('population');
+    expect(fixture('EUA190').population).toBe(0);
+  });
+
+  it('maps the sparse row without inventing a population or website', () => {
+    const sparse = fixture('ASJP91');
+    expect(sparse).not.toHaveProperty('population');
+    expect(sparse).not.toHaveProperty('website');
+    expect(sparse).toMatchObject({
+      ugg_id: 'ASJP91',
+      designation_year: 2015,
+      area_hectares: 30_000,
+    });
+  });
+
+  it('turns an entity-encoded list introduction into one line per item', () => {
+    expect(fixture('EUIT92').introduction).toBe(
+      'Explore the red earth mines.\nFollow the plateau trail.',
+    );
+  });
+
+  it('reads the designation year from the date and keeps the area as recorded', () => {
+    expect(geopark({ date: '2026-01-01', area_total: 27_000_000 })).toMatchObject({
+      designation_year: 2026,
+      area_hectares: 27_000_000,
+    });
+  });
+
+  it('keeps only http(s) websites, serialized as the parser does', () => {
+    expect(geopark({ website: 'http://a.example.test' }).website).toBe('http://a.example.test/');
+    expect(geopark({ website: 'ftp://a.example.test/' })).not.toHaveProperty('website');
+    expect(geopark({ website: 'not a url' })).not.toHaveProperty('website');
+    expect(geopark({ website: '   ' })).not.toHaveProperty('website');
+  });
+
+  it('serializes the page URL and fails the row when it is not an http(s) URL', () => {
+    expect(geopark({ url: 'https://x.test/iggp/a\r\n# b' }).url).toBe('https://x.test/iggp/a#%20b');
+    expect(() => geopark({ url: 'not a url' })).toThrow('url is not an http(s) URL.');
   });
 });

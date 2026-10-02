@@ -1,14 +1,21 @@
 /**
  * @fileoverview Full-record builders shared by the get tools and the resources.
- * `buildSiteRecord`, `buildElementRecord`, and `buildReserveRecord` produce the
- * `unesco_get_site`, `unesco_get_intangible_heritage_element`, and
- * `unesco_get_biosphere_reserve` payloads from loaded records. Each builder
- * names the payload's fields explicitly, so the resources (which serialize the
- * builder's return as-is) never carry loader-internal fields.
+ * `buildSiteRecord`, `buildElementRecord`, `buildReserveRecord`, and
+ * `buildGeoparkRecord` produce the `unesco_get_site`,
+ * `unesco_get_intangible_heritage_element`, `unesco_get_biosphere_reserve`, and
+ * `unesco_get_geopark` payloads from loaded records. Each builder names the
+ * payload's fields explicitly, so the resources (which serialize the builder's
+ * return as-is) never carry loader-internal fields.
  * @module services/unesco-datahub/records
  */
 
-import type { BiosphereReserve, HeritageSite, IntangibleElement, SiteComponent } from './types.js';
+import type {
+  BiosphereReserve,
+  Geopark,
+  HeritageSite,
+  IntangibleElement,
+  SiteComponent,
+} from './types.js';
 import { CRITERIA, type CriterionCode } from './vocabulary.js';
 
 /** The `unesco_get_site` payload. */
@@ -151,5 +158,46 @@ export function buildReserveRecord(r: BiosphereReserve): ReserveRecord {
       : {}),
     ...(r.website ? { website: r.website } : {}),
     url: r.url,
+  };
+}
+
+/** The `unesco_get_geopark` payload. */
+export type GeoparkRecord = Pick<
+  Geopark,
+  | 'ugg_id'
+  | 'name'
+  | 'country_codes'
+  | 'countries'
+  | 'transnational'
+  | 'designation_year'
+  | 'area_hectares'
+  | 'population'
+  | 'latitude'
+  | 'longitude'
+  | 'introduction'
+  | 'description'
+  | 'sustaining_local_communities'
+  | 'website'
+  | 'url'
+>;
+
+/** Builds the full geopark record. Area and population pass through as recorded. */
+export function buildGeoparkRecord(g: Geopark): GeoparkRecord {
+  return {
+    ugg_id: g.ugg_id,
+    name: g.name,
+    country_codes: g.country_codes,
+    countries: g.countries,
+    transnational: g.transnational,
+    designation_year: g.designation_year,
+    area_hectares: g.area_hectares,
+    ...(g.population !== undefined ? { population: g.population } : {}),
+    latitude: g.latitude,
+    longitude: g.longitude,
+    introduction: g.introduction,
+    description: g.description,
+    sustaining_local_communities: g.sustaining_local_communities,
+    ...(g.website ? { website: g.website } : {}),
+    url: g.url,
   };
 }

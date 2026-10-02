@@ -1,7 +1,7 @@
 /**
- * @fileoverview Domain types for the three UNESCO Data Hub snapshots: World
- * Heritage sites, intangible heritage elements, biosphere reserves, and the
- * snapshot container the service hands to tools.
+ * @fileoverview Domain types for the four UNESCO Data Hub snapshots: World
+ * Heritage sites, intangible heritage elements, biosphere reserves, UNESCO
+ * Global Geoparks, and the snapshot container the service hands to tools.
  * @module services/unesco-datahub/types
  */
 
@@ -110,11 +110,35 @@ export interface BiosphereReserve {
   website?: string;
 }
 
+/** A UNESCO Global Geopark as the loader cleaned it. */
+export interface Geopark {
+  /** As recorded; `eg0001` states the unit (`ha`), and the loader fails a row in any other. */
+  area_hectares: number;
+  /** English display names aligned with `country_codes`. */
+  countries: string[];
+  /** ISO 3166-1 alpha-2 codes, split from the joined entry a transnational geopark carries. */
+  country_codes: string[];
+  description: string;
+  /** Designation year as UNESCO records it; geoparks older than the 2015 label are dated 2015. */
+  designation_year: number;
+  introduction: string;
+  latitude: number;
+  longitude: number;
+  name: string;
+  /** As recorded; absent when UNESCO records none, and 0 can mean unreported. */
+  population?: number;
+  sustaining_local_communities: string;
+  transnational: boolean;
+  ugg_id: string;
+  url: string;
+  website?: string;
+}
+
 /** One loaded dataset, indexed for local search and lookup. */
 export interface Snapshot<T> {
   /** The dataset's `data_processed` timestamp (ISO 8601). */
   asOf: string;
-  /** Lookup key → record (`id_no`, `ich_ref`, or folded `mab_id`). */
+  /** Lookup key → record (`id_no`, `ich_ref`, folded `mab_id`, or `ugg_id`). */
   byId: ReadonlyMap<string, T>;
   /** Country codes any record carries. */
   codes: ReadonlySet<string>;
@@ -130,6 +154,7 @@ export interface Snapshot<T> {
 export type HeritageSnapshot = Snapshot<HeritageSite>;
 export type IntangibleSnapshot = Snapshot<IntangibleElement>;
 export type BiosphereSnapshot = Snapshot<BiosphereReserve>;
+export type GeoparkSnapshot = Snapshot<Geopark>;
 
 /** Attribution entry every data response carries. */
 export interface SourceEntry {

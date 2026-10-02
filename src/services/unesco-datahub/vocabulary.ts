@@ -8,7 +8,7 @@
  */
 
 /** The UNESCO Data Hub dataset ids this server reads. */
-export const DATASET_IDS = ['whc001', 'ich001', 'mab001'] as const;
+export const DATASET_IDS = ['whc001', 'ich001', 'mab001', 'eg0001'] as const;
 export type DatasetId = (typeof DATASET_IDS)[number];
 
 /** The only license the loader accepts; any other value fails the refresh. */
@@ -20,6 +20,7 @@ export const DATASET_TITLES: Readonly<Record<DatasetId, string>> = {
   whc001: 'World Heritage List',
   ich001: 'Intangible Heritage List',
   mab001: 'Man and the Biosphere Programme',
+  eg0001: 'UNESCO Global Geoparks',
 };
 
 /** The credit line to reproduce with data from a dataset. */

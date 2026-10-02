@@ -9,10 +9,12 @@
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { describe, expect, it } from 'vitest';
 import { getBiosphereReserveTool } from '@/mcp-server/tools/definitions/get-biosphere-reserve.tool.js';
+import { getGeoparkTool } from '@/mcp-server/tools/definitions/get-geopark.tool.js';
 import { getIntangibleHeritageElementTool } from '@/mcp-server/tools/definitions/get-intangible-heritage-element.tool.js';
 import { getSiteTool } from '@/mcp-server/tools/definitions/get-site.tool.js';
 import { listReferenceTool } from '@/mcp-server/tools/definitions/list-reference.tool.js';
 import { searchBiosphereReservesTool } from '@/mcp-server/tools/definitions/search-biosphere-reserves.tool.js';
+import { searchGeoparksTool } from '@/mcp-server/tools/definitions/search-geoparks.tool.js';
 import { searchIntangibleHeritageTool } from '@/mcp-server/tools/definitions/search-intangible-heritage.tool.js';
 import { searchSitesTool } from '@/mcp-server/tools/definitions/search-sites.tool.js';
 
@@ -25,6 +27,8 @@ const TOOLS = [
   getIntangibleHeritageElementTool,
   searchBiosphereReservesTool,
   getBiosphereReserveTool,
+  searchGeoparksTool,
+  getGeoparkTool,
   listReferenceTool,
 ];
 
@@ -45,11 +49,13 @@ describe('error contract severity', () => {
     },
   );
 
-  it.each([searchSitesTool, searchIntangibleHeritageTool, searchBiosphereReservesTool])(
-    '$name declares invalid_cursor',
-    (tool) => {
-      const reasons = (tool.errors as readonly ContractEntry[]).map((e) => e.reason);
-      expect(reasons).toContain('invalid_cursor');
-    },
-  );
+  it.each([
+    searchSitesTool,
+    searchIntangibleHeritageTool,
+    searchBiosphereReservesTool,
+    searchGeoparksTool,
+  ])('$name declares invalid_cursor', (tool) => {
+    const reasons = (tool.errors as readonly ContractEntry[]).map((e) => e.reason);
+    expect(reasons).toContain('invalid_cursor');
+  });
 });

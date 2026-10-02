@@ -15,7 +15,7 @@ import {
   type UnescoDataHubServiceOptions,
 } from '@/services/unesco-datahub/unesco-datahub-service.js';
 import type { DatasetId } from '@/services/unesco-datahub/vocabulary.js';
-import { ICH_ROWS, MAB_ROWS, WHC_ROWS } from './rows.js';
+import { EG_ROWS, ICH_ROWS, MAB_ROWS, WHC_ROWS } from './rows.js';
 
 export const BASE_URL = 'https://data.unesco.org/api/explore/v2.1/catalog/datasets';
 export const DATA_AS_OF = '2026-09-30T02:06:00+00:00';
@@ -59,6 +59,7 @@ const DEFAULT_ROWS: Record<DatasetId, unknown[]> = {
   whc001: WHC_ROWS,
   ich001: ICH_ROWS,
   mab001: MAB_ROWS,
+  eg0001: EG_ROWS,
 };
 
 /** A metadata document in the shape the loader reads. */
@@ -95,7 +96,9 @@ export function createHub(options: HubOptions = {}): FakeHub {
   const get: Get = async (url, timeoutMs, _context, init) => {
     const href = String(url);
     const match = href.startsWith(`${BASE_URL}/`)
-      ? /^(whc001|ich001|mab001)(\/exports\/json\?.*)?$/.exec(href.slice(BASE_URL.length + 1))
+      ? /^(whc001|ich001|mab001|eg0001)(\/exports\/json\?.*)?$/.exec(
+          href.slice(BASE_URL.length + 1),
+        )
       : null;
     if (!match) throw new Error(`Unexpected upstream URL: ${href}`);
     const dataset = match[1] as DatasetId;

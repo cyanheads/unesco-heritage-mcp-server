@@ -10,23 +10,35 @@
 import { z } from '@cyanheads/mcp-ts-core';
 import { inline } from '@/mcp-server/shared/markdown.js';
 import type { SourceEntry } from '@/services/unesco-datahub/types.js';
-import { DATASET_IDS, LICENSE_URL } from '@/services/unesco-datahub/vocabulary.js';
+import { type DatasetId, LICENSE_URL } from '@/services/unesco-datahub/vocabulary.js';
 
-export const sourcesField = z
-  .array(
-    z
-      .object({
-        dataset: z.enum(DATASET_IDS).describe('UNESCO Data Hub dataset id.'),
-        title: z.string().describe('Dataset title.'),
-        data_as_of: z
-          .string()
-          .describe("Dataset's data_processed timestamp (ISO 8601) from the loaded snapshot."),
-        license: z.string().describe("Dataset license from the dataset metadata ('CC BY-SA 4.0')."),
-        attribution: z.string().describe('Credit line to reproduce with the data.'),
-      })
-      .describe('One source dataset.'),
-  )
-  .describe('Datasets this response was built from.');
+/** The `sources` field whose `dataset` enum names exactly `datasets`. */
+export function sourcesFieldOf(datasets: readonly [DatasetId, ...DatasetId[]]) {
+  return z
+    .array(
+      z
+        .object({
+          dataset: z.enum(datasets).describe('UNESCO Data Hub dataset id.'),
+          title: z.string().describe('Dataset title.'),
+          data_as_of: z
+            .string()
+            .describe("Dataset's data_processed timestamp (ISO 8601) from the loaded snapshot."),
+          license: z
+            .string()
+            .describe("Dataset license from the dataset metadata ('CC BY-SA 4.0')."),
+          attribution: z.string().describe('Credit line to reproduce with the data.'),
+        })
+        .describe('One source dataset.'),
+    )
+    .describe('Datasets this response was built from.');
+}
+
+/**
+ * The `sources` field of the World Heritage, intangible heritage, and biosphere
+ * reserve tools, naming those three datasets. A tool that can return `eg0001`
+ * declares `sourcesFieldOf` with it instead.
+ */
+export const sourcesField = sourcesFieldOf(['whc001', 'ich001', 'mab001']);
 
 /** One trailer line per dataset. */
 export function renderSources(sources: readonly SourceEntry[]): string {

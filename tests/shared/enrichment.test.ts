@@ -11,8 +11,10 @@ import {
   pageEnrichment,
   renderSources,
   sourcesField,
+  sourcesFieldOf,
 } from '@/mcp-server/shared/enrichment.js';
 import type { SourceEntry } from '@/services/unesco-datahub/types.js';
+import { DATASET_IDS } from '@/services/unesco-datahub/vocabulary.js';
 
 const entry = (overrides: Partial<SourceEntry> = {}): SourceEntry => ({
   dataset: 'whc001',
@@ -36,6 +38,29 @@ describe('sourcesField', () => {
     expect(sourcesField.safeParse([entry({ dataset: 'geo001' as 'whc001' })]).success).toBe(false);
     const { attribution: _omitted, ...partial } = entry();
     expect(sourcesField.safeParse([partial]).success).toBe(false);
+  });
+
+  it('keeps its advertised dataset enum at the three datasets those tools return', () => {
+    expect(z.toJSONSchema(sourcesField)).toMatchObject({
+      items: { properties: { dataset: { enum: ['whc001', 'ich001', 'mab001'] } } },
+    });
+    expect(sourcesField.safeParse([entry({ dataset: 'eg0001' })]).success).toBe(false);
+  });
+});
+
+describe('sourcesFieldOf', () => {
+  it('advertises exactly the datasets it is given', () => {
+    const geoparks = sourcesFieldOf(['eg0001']);
+    expect(z.toJSONSchema(geoparks)).toMatchObject({
+      items: { properties: { dataset: { enum: ['eg0001'] } } },
+    });
+    expect(geoparks.safeParse([entry({ dataset: 'eg0001' })]).success).toBe(true);
+    expect(geoparks.safeParse([entry()]).success).toBe(false);
+  });
+
+  it('accepts every dataset id when given them all', () => {
+    const all = sourcesFieldOf(DATASET_IDS);
+    expect(all.safeParse(DATASET_IDS.map((dataset) => entry({ dataset }))).success).toBe(true);
   });
 });
 

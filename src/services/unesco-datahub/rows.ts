@@ -1,15 +1,21 @@
 /**
  * @fileoverview Strict Zod schemas for the `exports/json` rows of `whc001`,
- * `ich001`, and `mab001` (exactly the allowlisted keys), the edge parsers
- * (text cleanup, criteria and the criterion (vi) inference, the pseudo-JSON
- * `components_list`, the `whc_sites` JSON string, the year lists, booleans),
- * and the row → domain mappers.
+ * `ich001`, `mab001`, and `eg0001` (exactly the allowlisted keys), the edge
+ * parsers (text cleanup, criteria and the criterion (vi) inference, the
+ * pseudo-JSON `components_list`, the `whc_sites` JSON string, the year lists,
+ * booleans), and the row → domain mappers.
  * @module services/unesco-datahub/rows
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
 import { countryDisplayName } from './iso3166.js';
-import type { BiosphereReserve, HeritageSite, IntangibleElement, SiteComponent } from './types.js';
+import type {
+  BiosphereReserve,
+  Geopark,
+  HeritageSite,
+  IntangibleElement,
+  SiteComponent,
+} from './types.js';
 import {
   BIOSPHERE_NETWORK_NAMES,
   CATEGORIES,
@@ -103,6 +109,23 @@ export const MAB_FIELDS = [
   'url',
   'regional_group',
   'sids',
+] as const;
+
+export const EG_FIELDS = [
+  'ugg_id',
+  'title_en',
+  'countries',
+  'transnational',
+  'date',
+  'introduction_en',
+  'description',
+  'sustaining_local_communities_description',
+  'area_unit',
+  'area_total',
+  'population',
+  'website',
+  'coordinates',
+  'url',
 ] as const;
 
 /* ------------------------------------------------------------------ */
@@ -217,6 +240,30 @@ export const MabRowSchema = z
   .strict();
 export type MabRow = z.infer<typeof MabRowSchema>;
 
+export const EgRowSchema = z
+  .object({
+    ugg_id: z
+      .string()
+      .max(20)
+      .regex(/^[A-Z0-9]+$/),
+    title_en: ShortText,
+    /** One entry per row; a transnational geopark's entry joins its codes (`AT,SI`). */
+    countries: z.array(ShortText.regex(/^[A-Z]{2}(?:,\s*[A-Z]{2})*$/)).min(1),
+    transnational: TrueFalse,
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    introduction_en: FreeText,
+    description: FreeText,
+    sustaining_local_communities_description: FreeText,
+    area_unit: z.literal('ha'),
+    area_total: z.number(),
+    population: z.number().nullable(),
+    website: UrlText.nullable(),
+    coordinates: GeoPoint,
+    url: UrlText,
+  })
+  .strict();
+export type EgRow = z.infer<typeof EgRowSchema>;
+
 /** The dataset metadata fields the loader reads (the rest of the document is ignored). */
 export const DatasetMetaSchema = z.object({
   metas: z.object({
@@ -249,6 +296,14 @@ const WhcSiteLinksSchema = z.array(
 /* Edge parsers                                                        */
 /* ------------------------------------------------------------------ */
 
+/**
+ * A run of `<ul>`/`<li>` tags (opening or closing, any case), raw or
+ * entity-encoded, with the whitespace between and after them. Matched before
+ * entities decode, so an encoded `&lt;` in prose is never read as a tag. Every
+ * repetition starts with `<` or `&`, which `\s` never matches, so the match is
+ * linear in the input.
+ */
+const LIST_TAGS = /(?:(?:<|&lt;)\/?(?:ul|li)\s*(?:>|&gt;)\s*)+/gi;
 const INLINE_TAG = /<\/?(?:em|i|u|b|strong|sup|small)\s*>/gi;
 const LINE_BREAK_TAG = /<br\s*\/?>/gi;
 const NAMED_ENTITIES: Readonly<Record<string, string>> = {
@@ -257,18 +312,22 @@ const NAMED_ENTITIES: Readonly<Record<string, string>> = {
   gt: '>',
   quot: '"',
   apos: "'",
+  nbsp: '\u00a0',
 };
 
 /**
- * Strips UNESCO's inline markup tags (the closed list, any case), turns `<br>`
- * into a space, then decodes numeric entities and the five XML named entities.
- * Other `<…>` text passes through. Trimmed.
+ * Turns each run of list tags (raw or entity-encoded) into a line break, so a
+ * list reads one item per line; strips UNESCO's inline markup tags (the closed
+ * list, any case); turns `<br>` into a space; then decodes numeric entities,
+ * the five XML named entities, and `&nbsp;`. Other `<…>` text passes through.
+ * Trimmed.
  */
 export function cleanText(text: string): string {
   return text
+    .replace(LIST_TAGS, '\n')
     .replace(LINE_BREAK_TAG, ' ')
     .replace(INLINE_TAG, '')
-    .replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (whole, entity: string) => {
+    .replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (whole, entity: string) => {
       const lower = entity.toLowerCase();
       if (lower.startsWith('#x')) return safeCodePoint(Number.parseInt(lower.slice(2), 16), whole);
       if (lower.startsWith('#')) return safeCodePoint(Number.parseInt(lower.slice(1), 10), whole);
@@ -575,6 +634,33 @@ export function toBiosphereReserve(row: MabRow): BiosphereReserve {
     introduction: cleanText(row.introduction_en),
     ...(ecological ? { ecological_characteristics: ecological } : {}),
     ...(socio ? { socio_economic_characteristics: socio } : {}),
+    ...(website ? { website } : {}),
+    url: requiredHttpUrl(row.url, 'url'),
+  };
+}
+
+/**
+ * Maps a validated `eg0001` row to a geopark. A transnational geopark's one
+ * joined `countries` entry (`AT,SI`) splits into its codes; area and population
+ * pass through as recorded, and a null population stays absent.
+ */
+export function toGeopark(row: EgRow): Geopark {
+  const codes = row.countries.flatMap((entry) => entry.split(',').map((c) => c.trim()));
+  const website = httpUrl(row.website);
+  return {
+    ugg_id: row.ugg_id,
+    name: cleanText(row.title_en),
+    country_codes: codes,
+    countries: codes.map(countryDisplayName),
+    transnational: row.transnational === 'True',
+    designation_year: Number(row.date.slice(0, 4)),
+    area_hectares: row.area_total,
+    ...(row.population !== null ? { population: row.population } : {}),
+    latitude: row.coordinates.lat,
+    longitude: row.coordinates.lon,
+    introduction: cleanText(row.introduction_en),
+    description: cleanText(row.description),
+    sustaining_local_communities: cleanText(row.sustaining_local_communities_description),
     ...(website ? { website } : {}),
     url: requiredHttpUrl(row.url, 'url'),
   };

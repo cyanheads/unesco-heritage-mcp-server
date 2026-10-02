@@ -1,6 +1,6 @@
 /**
  * @fileoverview Synthetic export-row builders and the default fixture datasets
- * for the three UNESCO Data Hub datasets. Every name and text is invented;
+ * for the four UNESCO Data Hub datasets. Every name and text is invented;
  * shapes follow the API Reference in docs/design.md.
  * @module tests/fixtures/rows
  */
@@ -113,6 +113,27 @@ export function mabRow(overrides: Record<string, unknown> = {}): Record<string, 
     url: 'https://www.unesco.org/en/mab/placeholder',
     regional_group: 'Europe and North America',
     sids: 'False',
+    ...overrides,
+  };
+}
+
+/** A complete `eg0001` export row. */
+export function egRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    ugg_id: 'EUFR99',
+    title_en: 'Placeholder UNESCO Global Geopark',
+    countries: ['FR'],
+    transnational: 'False',
+    date: '2019-01-01',
+    introduction_en: 'A synthetic geopark used as test data.',
+    description: 'Synthetic limestone and fossil beds.',
+    sustaining_local_communities_description: 'Synthetic villages run guided geotourism.',
+    area_unit: 'ha',
+    area_total: 50_000,
+    population: 20_000,
+    website: 'https://geopark.example.test/placeholder',
+    coordinates: { lon: 3, lat: 45 },
+    url: 'https://www.unesco.org/en/iggp/placeholder-unesco-global-geopark',
     ...overrides,
   };
 }
@@ -320,6 +341,90 @@ export const WHC_ROWS: Record<string, unknown>[] = [
   ...FILLER_SITES,
 ];
 
+/** The point the {@link NEAR_SITE_ROWS} geometry is laid out around. */
+export const NEAR_POINT = { latitude: 60, longitude: 5 } as const;
+
+const nearSite = (id: string, name: string, overrides: Record<string, unknown>) =>
+  whcRow({
+    id_no: id,
+    name_en: name,
+    name_fr: `${name} (fr)`,
+    short_description_en: `Synthetic site ${id}.`,
+    justification_en: null,
+    date_inscribed: '2000',
+    secondary_dates: '2000',
+    ...overrides,
+  });
+
+/**
+ * Sites laid out due north of {@link NEAR_POINT} (60, 5), for distance search
+ * over representative points and components. Distances from the point, rounded
+ * to 0.1 km: 501 via its second component 5.6 (representative point 5,575.3
+ * away); 502 via its nameless second component 3.3 (no representative point);
+ * 503 has neither point (and no description, area, or image); 504 at 33.4, its
+ * one component on its representative point; 505 at 2.2 by its representative
+ * point, its component at 111.2; 506 at 11.1 by both points, the component
+ * nearer only before rounding; 507 via its component 4.4 (representative point
+ * 27.8).
+ */
+export const NEAR_SITE_ROWS: Record<string, unknown>[] = [
+  nearSite('501', 'Farspan Serial Ensemble', {
+    coordinates: { lon: 10, lat: 10 },
+    components_count: 3,
+    components_list: componentsList([
+      { name: 'Far Annex', ref: '501-001', latitude: 10, longitude: 10.1 },
+      { name: 'Quayside Lodge', ref: '501-002', latitude: 60.05, longitude: 5 },
+      { name: 'Upper Lodge', ref: '501-003', latitude: 60.2, longitude: 5 },
+    ]),
+  }),
+  nearSite('502', 'Hillcrest Serial Site', {
+    coordinates: null,
+    components_count: 2,
+    components_list: componentsList([
+      { name: 'Hill Fort', ref: '502-001', latitude: 60.1, longitude: 5 },
+      { name: '', ref: '502-002', latitude: 59.97, longitude: 5 },
+    ]),
+  }),
+  nearSite('503', 'Unplotted Record', {
+    short_description_en: null,
+    area_hectares: null,
+    coordinates: null,
+    components_count: 0,
+    components_list: null,
+    main_image_url: null,
+    main_image_copyright: null,
+    main_image_author: null,
+  }),
+  nearSite('504', 'Mirrorpoint Site', {
+    coordinates: { lon: 5, lat: 60.3 },
+    components_count: 1,
+    components_list: componentsList([
+      { name: 'Mirror Part', ref: '504-001', latitude: 60.3, longitude: 5 },
+    ]),
+  }),
+  nearSite('505', 'Keystone Site', {
+    coordinates: { lon: 5, lat: 60.02 },
+    components_count: 1,
+    components_list: componentsList([
+      { name: 'Outlier', ref: '505-001', latitude: 61, longitude: 5 },
+    ]),
+  }),
+  nearSite('506', 'Roundtie Site', {
+    coordinates: { lon: 5, lat: 60.1 },
+    components_count: 1,
+    components_list: componentsList([
+      { name: 'Close Second', ref: '506-001', latitude: 60.0997, longitude: 5 },
+    ]),
+  }),
+  nearSite('507', 'Drawbridge Site', {
+    coordinates: { lon: 5, lat: 60.25 },
+    components_count: 1,
+    components_list: componentsList([
+      { name: 'Gatehouse', ref: '507-001', latitude: 60.04, longitude: 5 },
+    ]),
+  }),
+];
+
 /** The default `ich001` fixture rows. */
 export const ICH_ROWS: Record<string, unknown>[] = [
   ichRow({
@@ -409,5 +514,77 @@ export const MAB_ROWS: Record<string, unknown>[] = [
     ecological_characteristics_en: null,
     socio_economic_characteristics_en: null,
     coordinates: { lon: -75, lat: -10 },
+  }),
+];
+
+/**
+ * The default `eg0001` fixture rows: entity-bearing text dated 2015, a
+ * transnational geopark whose one `countries` entry joins two codes, a sparse
+ * row (null population and website, also dated 2015), an entity-encoded list
+ * introduction, and a non-ASCII name.
+ */
+export const EG_ROWS: Record<string, unknown>[] = [
+  egRow({
+    ugg_id: 'EUFR90',
+    title_en: 'Alderfen Cliffs UNESCO Global Geopark',
+    date: '2015-01-01',
+    introduction_en:
+      'The &quot;Alderfen&quot; cliffs record 300 million years of the coast&#39;s history.',
+    description: 'Chalk cliffs and fossil beds.&nbsp;Synthetic sea stacks rise offshore.&nbsp;',
+    sustaining_local_communities_description:
+      'Fishing &amp; farming villages share the coast.&#160;Synthetic markets sell local stone.',
+    area_total: 120_000,
+    population: 52_000,
+    website: 'https://geopark.example.test/alderfen',
+    coordinates: { lon: 1.5, lat: 49.9 },
+    url: 'https://www.unesco.org/en/iggp/alderfen-cliffs-unesco-global-geopark',
+  }),
+  egRow({
+    ugg_id: 'EUA190',
+    title_en: 'Brindle Karst UNESCO Global Geopark',
+    countries: ['DE,PL'],
+    transnational: 'True',
+    date: '2018-01-01',
+    introduction_en: 'A synthetic karst landscape spanning a river border.',
+    area_total: 75_000,
+    population: 0,
+    website: 'http://brindle.example.test/',
+    coordinates: { lon: 14.7, lat: 51.5 },
+    url: 'https://www.unesco.org/en/iggp/brindle/karst-unesco-global-geopark',
+  }),
+  egRow({
+    ugg_id: 'ASJP91',
+    title_en: 'Kestrel Caldera UNESCO Global Geopark',
+    countries: ['JP'],
+    date: '2015-01-01',
+    introduction_en: 'A synthetic caldera lake ringed by hot springs.',
+    area_total: 30_000,
+    population: null,
+    website: null,
+    coordinates: { lon: 140.1, lat: 38.2 },
+    url: 'https://www.unesco.org/en/iggp/kestrel-caldera-unesco-global-geopark',
+  }),
+  egRow({
+    ugg_id: 'EUIT92',
+    title_en: 'Murrow Plateau UNESCO Global Geopark',
+    countries: ['IT'],
+    date: '2023-01-01',
+    introduction_en:
+      '&lt;ul&gt; &lt;li&gt;Explore the red earth mines.&lt;/li&gt; &lt;li&gt;Follow the plateau trail.&lt;/li&gt; &lt;/ul&gt;',
+    area_total: 250_000,
+    population: 410_000,
+    coordinates: { lon: 16.3, lat: 41 },
+    url: 'https://www.unesco.org/en/iggp/murrow-plateau-unesco-global-geopark',
+  }),
+  egRow({
+    ugg_id: 'LAPE93',
+    title_en: 'Ñandu Canyon UNESCO Global Geopark',
+    countries: ['PE'],
+    date: '2024-01-01',
+    introduction_en: 'A synthetic canyon cut through volcanic tuff.',
+    area_total: 2_500_000,
+    population: 8_000,
+    coordinates: { lon: -73.9, lat: -15.3 },
+    url: 'https://www.unesco.org/en/iggp/nandu-canyon-unesco-global-geopark',
   }),
 ];

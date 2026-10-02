@@ -8,7 +8,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { countOf, renderSources, sourcesField } from '@/mcp-server/shared/enrichment.js';
+import { countOf, renderSources, sourcesFieldOf } from '@/mcp-server/shared/enrichment.js';
 import { MAX_QUERY_WORDS, queryInput } from '@/mcp-server/shared/inputs.js';
 import { cell, inline } from '@/mcp-server/shared/markdown.js';
 import {
@@ -21,6 +21,7 @@ import {
 import { compareText, matchesAllWords } from '@/services/unesco-datahub/search.js';
 import type {
   BiosphereSnapshot,
+  GeoparkSnapshot,
   HeritageSnapshot,
   IntangibleSnapshot,
 } from '@/services/unesco-datahub/types.js';
@@ -32,6 +33,7 @@ import {
   BIOSPHERE_NETWORKS,
   CRITERIA,
   CRITERIA_CODES,
+  DATASET_IDS,
   DATASET_TITLES,
   type DatasetId,
   datasetAttribution,
@@ -101,6 +103,9 @@ const CountryRow = z
         'Intangible heritage elements listing this country, multinational elements included.',
       ),
     biosphere_reserve_count: z.number().describe('Biosphere reserves in this country.'),
+    geopark_count: z
+      .number()
+      .describe('UNESCO Global Geoparks listing this country, transnational geoparks included.'),
   })
   .describe('One country.');
 
@@ -200,7 +205,7 @@ export const listReferenceTool = tool('unesco_list_reference', {
   }),
   output: ReferenceOutput,
   enrichment: {
-    sources: sourcesField,
+    sources: sourcesFieldOf(DATASET_IDS),
     notice: z.string().optional().describe('Guidance when the filter matched no entry.'),
   },
   enrichmentTrailer: {
@@ -225,7 +230,12 @@ export const listReferenceTool = tool('unesco_list_reference', {
       filter ? rows.filter((row) => matchesAllWords(filter, columns(row))) : rows;
 
     const loadAll = () =>
-      Promise.all([svc.getHeritage(ctx), svc.getIntangible(ctx), svc.getBiosphere(ctx)]);
+      Promise.all([
+        svc.getHeritage(ctx),
+        svc.getIntangible(ctx),
+        svc.getBiosphere(ctx),
+        svc.getGeoparks(ctx),
+      ]);
     let noMatch: string | undefined;
 
     const list = async (topic: Topic): Promise<ReferenceResult> => {
@@ -339,6 +349,7 @@ export const listReferenceTool = tool('unesco_list_reference', {
             'World Heritage sites',
             'Intangible elements',
             'Biosphere reserves',
+            'Geoparks',
           ],
           result.countries.map((r) => [
             r.code ?? 'No ISO code',
@@ -348,6 +359,7 @@ export const listReferenceTool = tool('unesco_list_reference', {
             String(r.heritage_site_count),
             String(r.intangible_element_count),
             String(r.biosphere_reserve_count),
+            String(r.geopark_count),
           ]),
         ),
       );
@@ -430,14 +442,21 @@ function countryRows(
   heritage: HeritageSnapshot,
   intangible: IntangibleSnapshot,
   biosphere: BiosphereSnapshot,
+  geoparks: GeoparkSnapshot,
 ): z.infer<typeof CountryRow>[] {
-  type Tally = { unesco_name?: string; heritage: number; intangible: number; biosphere: number };
+  type Tally = {
+    unesco_name?: string;
+    heritage: number;
+    intangible: number;
+    biosphere: number;
+    geoparks: number;
+  };
   const byCode = new Map<string, Tally>();
   const codeless = new Map<string, Tally>();
   const tally = (map: Map<string, Tally>, key: string) => {
     let entry = map.get(key);
     if (!entry) {
-      entry = { heritage: 0, intangible: 0, biosphere: 0 };
+      entry = { heritage: 0, intangible: 0, biosphere: 0, geoparks: 0 };
       map.set(key, entry);
     }
     return entry;
@@ -467,6 +486,9 @@ function countryRows(
     entry.unesco_name ??= reserve.country;
     entry.biosphere += 1;
   }
+  for (const geopark of geoparks.records) {
+    for (const code of new Set(geopark.country_codes)) tally(byCode, code).geoparks += 1;
+  }
 
   const rows: z.infer<typeof CountryRow>[] = [];
   for (const [code, t] of byCode) {
@@ -479,6 +501,7 @@ function countryRows(
       heritage_site_count: t.heritage,
       intangible_element_count: t.intangible,
       biosphere_reserve_count: t.biosphere,
+      geopark_count: t.geoparks,
     });
   }
   for (const [name, t] of codeless) {
@@ -488,6 +511,7 @@ function countryRows(
       heritage_site_count: t.heritage,
       intangible_element_count: t.intangible,
       biosphere_reserve_count: t.biosphere,
+      geopark_count: t.geoparks,
     });
   }
   return rows.sort((a, b) => compareText(a.name, b.name));
@@ -509,9 +533,11 @@ function datasetRows(
   heritage: HeritageSnapshot,
   intangible: IntangibleSnapshot,
   biosphere: BiosphereSnapshot,
+  geoparks: GeoparkSnapshot,
 ): z.infer<typeof DatasetRow>[] {
   const viSites = heritage.records.filter((s) => s.criteria_inferred.includes('vi')).length;
   const dated2008 = intangible.records.filter((e) => e.inscribed_year === 2008).length;
+  const dated2015 = geoparks.records.filter((g) => g.designation_year === 2015).length;
   const notes: Record<DatasetId, string[]> = {
     whc001: [
       `UNESCO's criteria fields omit criterion (vi); this server infers it from each site's statement of Outstanding Universal Value (${countOf(viSites, 'site')}) and marks it as inferred.`,
@@ -527,8 +553,13 @@ function datasetRows(
       'Zone areas and populations do not always sum to the recorded totals, and a population of 0 can mean none or unreported.',
       'No withdrawn reserves are present.',
     ],
+    eg0001: [
+      `The ${countOf(dated2015, 'geopark')} dated 2015 ${dated2015 === 1 ? 'carries' : 'carry'} the year UNESCO created the UNESCO Global Geopark designation, not the year ${dated2015 === 1 ? 'it' : 'each'} joined the Global Geoparks Network, which the data does not record.`,
+      'Areas and populations are passed through as recorded; population is absent where UNESCO records no figure, and 0 can mean unreported.',
+      'Images are omitted, because the dataset records no image credit.',
+    ],
   };
-  return [heritage, intangible, biosphere].map((s) => ({
+  return [heritage, intangible, biosphere, geoparks].map((s) => ({
     dataset: s.dataset,
     title: DATASET_TITLES[s.dataset],
     records: s.records.length,

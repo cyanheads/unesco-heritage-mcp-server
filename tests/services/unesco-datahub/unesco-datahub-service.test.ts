@@ -12,7 +12,7 @@ import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { logger } from '@cyanheads/mcp-ts-core/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WHC_FIELDS } from '@/services/unesco-datahub/rows.js';
+import { EG_FIELDS, WHC_FIELDS } from '@/services/unesco-datahub/rows.js';
 import {
   getUnescoDataHubService,
   initUnescoDataHubService,
@@ -28,7 +28,7 @@ import {
   httpFailure,
   metaDocument,
 } from '../../fixtures/hub.js';
-import { ICH_ROWS, MAB_ROWS, WHC_ROWS, whcRow } from '../../fixtures/rows.js';
+import { EG_ROWS, egRow, ICH_ROWS, MAB_ROWS, WHC_ROWS, whcRow } from '../../fixtures/rows.js';
 
 const services: UnescoDataHubService[] = [];
 let clock = 0;
@@ -552,7 +552,9 @@ describe('body budgets and text bounds', () => {
     const { service } = makeService({
       intercept: (call) => {
         if (call.kind !== 'export') return;
-        const rows = { whc001: WHC_ROWS, ich001: ICH_ROWS, mab001: MAB_ROWS }[call.dataset];
+        const rows = { whc001: WHC_ROWS, ich001: ICH_ROWS, mab001: MAB_ROWS, eg0001: EG_ROWS }[
+          call.dataset
+        ];
         return paddedBody(rows, 17).response;
       },
     });
@@ -562,6 +564,25 @@ describe('body budgets and text bounds', () => {
       expect(error.data).toMatchObject({ reason: 'snapshot_unavailable' });
       expect((error.cause as McpError).message).toContain('16 MiB');
     }
+  });
+
+  it('holds the geopark export to 8 MiB, non-retryably, and loads one under it', async () => {
+    const over = makeService({
+      intercept: (call) => (call.kind === 'export' ? paddedBody(EG_ROWS, 9).response : undefined),
+    });
+    const error = (await over.service.getGeoparks(ctx()).catch((e: unknown) => e)) as McpError;
+    expect(error.data).toMatchObject({ reason: 'snapshot_unavailable', dataset: 'eg0001' });
+    expect((error.cause as McpError).message).toContain('8 MiB');
+    expect((error.cause as McpError).data).toMatchObject({ dataset: 'eg0001', retryable: false });
+    expect(over.hub.callsFor('eg0001', 'export')).toHaveLength(1);
+
+    const under = makeService({
+      intercept: (call) => (call.kind === 'export' ? paddedBody(EG_ROWS, 7).response : undefined),
+    });
+    await expect(under.service.getGeoparks(ctx())).resolves.toMatchObject({
+      dataset: 'eg0001',
+      recordsCount: EG_ROWS.length,
+    });
   });
 
   it('fails the load when the metadata document exceeds 1 MiB, before fetching the export', async () => {
@@ -825,6 +846,190 @@ describe('upstream failure classes (retry ladder under fake timers)', () => {
     const error = await rejectionOf(service.getHeritage(ctx()), 60_000);
     expect(error.data).toMatchObject({ reason: 'snapshot_unavailable', dataset: 'whc001' });
     expect((error.cause as McpError).data).toMatchObject({ reason: 'retry_deadline_exceeded' });
+  });
+});
+
+describe('UNESCO Global Geoparks (eg0001)', () => {
+  it('loads only its own two documents on first use, with the allowlisted select', async () => {
+    const { hub, service } = makeService();
+    const snapshot = await service.getGeoparks(ctx());
+    expect(snapshot.dataset).toBe('eg0001');
+    expect(hub.calls.map((c) => `${c.dataset} ${c.kind}`)).toEqual([
+      'eg0001 meta',
+      'eg0001 export',
+    ]);
+    const [meta, exported] = hub.calls;
+    expect(meta?.url).toBe(`${BASE_URL}/eg0001`);
+    const query = new URL(exported?.url ?? '').searchParams;
+    expect([...query.keys()]).toEqual(['select']);
+    expect(query.get('select')?.split(',')).toEqual([...EG_FIELDS]);
+    expect(await service.getGeoparks(ctx())).toBe(snapshot);
+    expect(hub.calls).toHaveLength(2);
+  });
+
+  it('keys geoparks by ugg_id, collects the split country codes, and folds three tiers', async () => {
+    const { service } = makeService();
+    const snapshot = await service.getGeoparks(ctx());
+    expect(snapshot.records).toHaveLength(EG_ROWS.length);
+    expect(snapshot.recordsCount).toBe(EG_ROWS.length);
+    expect(snapshot.asOf).toBe(DATA_AS_OF);
+    expect(snapshot.license).toBe('CC BY-SA 4.0');
+    expect(snapshot.loadedAt).toBe(clock);
+    expect(snapshot.byId.get('EUA190')?.name).toBe('Brindle Karst UNESCO Global Geopark');
+    expect(snapshot.byId.get('ASJP91')?.ugg_id).toBe('ASJP91');
+    expect(snapshot.byId.get('eua190')).toBeUndefined();
+    expect([...snapshot.codes].sort()).toEqual(['DE', 'FR', 'IT', 'JP', 'PE', 'PL']);
+    const index = snapshot.records.findIndex((g) => g.ugg_id === 'EUFR90');
+    const [name, introduction, narratives] = snapshot.folded[index] ?? [];
+    expect(name).toBe(' alderfen cliffs unesco global geopark');
+    expect(introduction).toContain(' the alderfen cliffs record 300 million years');
+    expect(narratives).toContain(' chalk cliffs and fossil beds');
+    expect(narratives).toContain(' fishing farming villages share the coast');
+    for (const tiers of snapshot.folded) expect(tiers).toHaveLength(3);
+  });
+
+  it('serves loaded text with no &nbsp;, &quot;, &#39;, <ul>, or <li> left in it', async () => {
+    const { service } = makeService();
+    const snapshot = await service.getGeoparks(ctx());
+    const texts = snapshot.records.flatMap((g) => [
+      g.name,
+      g.introduction,
+      g.description,
+      g.sustaining_local_communities,
+    ]);
+    for (const text of texts) expect(text).not.toMatch(/&nbsp;|&quot;|&#39;|<\/?(?:ul|li)>/i);
+    expect(snapshot.byId.get('EUIT92')?.introduction).toBe(
+      'Explore the red earth mines.\nFollow the plateau trail.',
+    );
+  });
+
+  it('lets the 2015-dated count be read from the loaded records', async () => {
+    const dated = (records: readonly { designation_year: number }[]) =>
+      records.filter((g) => g.designation_year === 2015).length;
+    expect(dated((await makeService().service.getGeoparks(ctx())).records)).toBe(2);
+    const rows = [
+      egRow({ ugg_id: 'EUA1', date: '2015-01-01' }),
+      egRow({ ugg_id: 'EUA2', date: '2016-01-01' }),
+    ];
+    expect(
+      dated((await makeService({ rows: { eg0001: rows } }).service.getGeoparks(ctx())).records),
+    ).toBe(1);
+  });
+
+  it('builds the attribution entry from the server constant title', async () => {
+    const { service } = makeService();
+    expect(sourceOf(await service.getGeoparks(ctx()))).toEqual({
+      dataset: 'eg0001',
+      title: 'UNESCO Global Geoparks',
+      data_as_of: DATA_AS_OF,
+      license: 'CC BY-SA 4.0',
+      attribution: 'UNESCO — UNESCO Global Geoparks (eg0001), UNESCO Data Hub, CC BY-SA 4.0',
+    });
+  });
+
+  it('fails the load on a row whose area_unit is not ha, non-retryably, naming the field', async () => {
+    const rows = [EG_ROWS[0], { ...EG_ROWS[1], area_unit: 'km2' }, ...EG_ROWS.slice(2)];
+    const { hub, service } = makeService({ rows: { eg0001: rows } });
+    const error = (await service.getGeoparks(ctx()).catch((e: unknown) => e)) as McpError;
+    expect(error.data).toMatchObject({ reason: 'snapshot_unavailable', dataset: 'eg0001' });
+    const cause = error.cause as McpError;
+    expect(cause.message).toContain('row 1 failed validation');
+    expect(cause.message).toContain('area_unit');
+    expect(cause.data).toMatchObject({ rowIndex: 1, retryable: false });
+    expect(hub.callsFor('eg0001', 'export')).toHaveLength(1);
+  });
+
+  it('fails the load on a duplicate ugg_id', async () => {
+    const { service } = makeService({ rows: { eg0001: [...EG_ROWS, EG_ROWS[2]] } });
+    const error = (await service.getGeoparks(ctx()).catch((e: unknown) => e)) as McpError;
+    expect((error.cause as McpError).message).toContain('duplicate record id ASJP91');
+  });
+
+  it('reports a failed first load as snapshot_unavailable naming the dataset', async () => {
+    const { service } = makeService({
+      intercept: (call) => (call.dataset === 'eg0001' ? httpFailure(404) : undefined),
+    });
+    const error = (await service.getGeoparks(ctx()).catch((e: unknown) => e)) as McpError;
+    expect(error).toBeInstanceOf(McpError);
+    expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+    expect(error.data).toMatchObject({
+      reason: 'snapshot_unavailable',
+      retryable: true,
+      dataset: 'eg0001',
+      retryAfter: 60,
+    });
+    expect(error.message).toContain('UNESCO Global Geoparks (eg0001)');
+    expect((error.cause as McpError).code).toBe(JsonRpcErrorCode.NotFound);
+    await expect(service.getHeritage(ctx())).resolves.toMatchObject({ dataset: 'whc001' });
+    await expect(service.getIntangible(ctx())).resolves.toMatchObject({ dataset: 'ich001' });
+    await expect(service.getBiosphere(ctx())).resolves.toMatchObject({ dataset: 'mab001' });
+  });
+
+  it('loads while another dataset is down', async () => {
+    const { service } = makeService({
+      intercept: (call) => (call.dataset === 'eg0001' ? undefined : httpFailure(404)),
+    });
+    await expect(service.getBiosphere(ctx())).rejects.toMatchObject({
+      data: { reason: 'snapshot_unavailable', dataset: 'mab001' },
+    });
+    await expect(service.getGeoparks(ctx())).resolves.toMatchObject({ dataset: 'eg0001' });
+  });
+
+  it('refuses a changed license without fetching the export', async () => {
+    const { hub, service } = makeService({ metas: { eg0001: { license: 'CC BY 4.0' } } });
+    const error = (await service.getGeoparks(ctx()).catch((e: unknown) => e)) as McpError;
+    expect(error.data).toMatchObject({ reason: 'snapshot_unavailable', dataset: 'eg0001' });
+    expect((error.cause as McpError).data).toMatchObject({
+      licenseChanged: true,
+      license: 'CC BY 4.0',
+    });
+    expect(hub.callsFor('eg0001', 'meta')).toHaveLength(1);
+    expect(hub.callsFor('eg0001', 'export')).toHaveLength(0);
+  });
+
+  it('keeps the previous snapshot when a refresh brings a row whose area_unit is not ha', async () => {
+    const TTL = 5_000;
+    const hubOptions: HubOptions = {};
+    const { service } = makeService(hubOptions, TTL);
+    const first = await service.getGeoparks(ctx());
+    clock += TTL;
+    hubOptions.rows = { eg0001: [egRow({ area_unit: 'acres' })] };
+    const warning = vi.spyOn(logger, 'warning');
+    expect(await service.getGeoparks(ctx())).toBe(first);
+    await vi.waitFor(() => expect(warning).toHaveBeenCalled());
+    expect(await service.getGeoparks(ctx())).toBe(first);
+  });
+
+  describe('row-count check (retry ladder under fake timers)', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+      });
+    });
+
+    it('re-fetches both documents when the export row count disagrees, then succeeds', async () => {
+      let metaCalls = 0;
+      const { hub, service } = makeService({
+        intercept: (call) =>
+          call.kind === 'meta' && metaCalls++ === 0
+            ? Response.json(metaDocument('eg0001', { records_count: EG_ROWS.length + 1 }))
+            : undefined,
+      });
+      const settled = service.getGeoparks(ctx());
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(settled).resolves.toMatchObject({ recordsCount: EG_ROWS.length });
+      expect(hub.calls.map((c) => c.kind)).toEqual(['meta', 'export', 'meta', 'export']);
+    });
+
+    it('gives up after the retries when the count keeps disagreeing', async () => {
+      const { hub, service } = makeService({ metas: { eg0001: { records_count: 241 } } });
+      const error = await rejectionOf(service.getGeoparks(ctx()));
+      expect(error.data).toMatchObject({ reason: 'snapshot_unavailable', dataset: 'eg0001' });
+      expect((error.cause as McpError).message).toContain(
+        `exported ${EG_ROWS.length} rows but its metadata reports 241`,
+      );
+      expect(hub.callsFor('eg0001', 'export')).toHaveLength(3);
+    });
   });
 });
 

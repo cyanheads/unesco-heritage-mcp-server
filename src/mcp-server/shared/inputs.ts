@@ -1,7 +1,8 @@
 /**
  * @fileoverview Shared input schemas and schema-level normalizers for the
  * unesco_* tools and resources: blank-as-unset wrapping, country, region,
- * year bounds, keyword query and filter, pagination, the `near` point, and the record-id
+ * year bounds, keyword query and filter, pagination, the search rows'
+ * `include_description` switch, the `near` point, and the record-id
  * normalizers. Every normalization runs in the schema, before the validator.
  * @module mcp-server/shared/inputs
  */
@@ -100,6 +101,15 @@ export const cursorInput = blankAsUnset(z.string().max(1024).optional()).describ
 /** A boolean filter; blank means unset. */
 export function booleanInput(description: string) {
   return blankAsUnset(z.boolean().optional()).describe(description);
+}
+
+/**
+ * Whether search rows carry their narrative text: `true` by default (and when
+ * blank); `false` drops the field the description names. The description says
+ * which field and which get tool returns it.
+ */
+export function includeDescriptionInput(description: string) {
+  return blankAsUnset(z.boolean().default(true)).describe(description);
 }
 
 const NearSchema = z
@@ -206,4 +216,26 @@ export function normalizeMabId(value: unknown): unknown {
  */
 export function mabIdInput(description: string) {
   return z.preprocess(normalizeMabId, z.string().min(1).max(20)).describe(description);
+}
+
+/** `ugg_id` preprocess: trim, then uppercase, since geoparks are keyed by the id as recorded (`EUFR10`). */
+export function normalizeUggId(value: unknown): unknown {
+  return typeof value === 'string' ? value.trim().toUpperCase() : value;
+}
+
+/**
+ * A required UNESCO Global Geopark `ugg_id`: letters and digits in any case, up
+ * to 20, with no fixed length, since the per-country number can outgrow two
+ * digits. No page-URL form: a geopark's UNESCO page URL carries a slug, not the id.
+ */
+export function uggIdInput(description: string) {
+  return z
+    .preprocess(
+      normalizeUggId,
+      z
+        .string()
+        .max(20)
+        .regex(/^[A-Za-z0-9]+$/),
+    )
+    .describe(description);
 }

@@ -1,10 +1,11 @@
 /**
- * @fileoverview Generated intangible heritage and biosphere reserve rows for
- * pagination, sorting, and sparse-shape tests. Every name and text is invented.
+ * @fileoverview Generated intangible heritage, biosphere reserve, and geopark
+ * rows for pagination, sorting, and sparse-shape tests. Every name and text is
+ * invented.
  * @module tests/fixtures/paging
  */
 
-import { ichRow, mabRow } from './rows.js';
+import { egRow, ichRow, mabRow } from './rows.js';
 
 const INTANGIBLE_LISTS = [
   'Representative List',
@@ -68,6 +69,29 @@ export function manyMabRows(count: number): Record<string, unknown>[] {
       coordinates: { lon: 2, lat: 48 + i * 0.1 },
       regional_network:
         i % 3 === 2 ? null : 'Europe and North America Biosphere Reserve Network (EuroMAB)',
+    });
+  });
+}
+
+/**
+ * `count` geoparks `LG01`…, named `Loomvale Geopark NN`, with countries
+ * cycling FR/DE/JP and every fifth (index 0, 5, …) transnational with BE,
+ * years 2015–2024 (so every tenth is dated 2015), areas ascending by index, and
+ * positions marching north from (48, 2) in 0.1° steps.
+ */
+export function manyEgRows(count: number): Record<string, unknown>[] {
+  return Array.from({ length: count }, (_, i) => {
+    const transnational = i % 5 === 0;
+    const code = ['FR', 'DE', 'JP'][i % 3] as string;
+    return egRow({
+      ugg_id: `LG${String(i + 1).padStart(2, '0')}`,
+      title_en: `Loomvale Geopark ${String(i + 1).padStart(2, '0')}`,
+      countries: [transnational ? `${code},BE` : code],
+      transnational: transnational ? 'True' : 'False',
+      date: `${2015 + (i % 10)}-01-01`,
+      introduction_en: `Synthetic geopark number ${i + 1}.`,
+      area_total: 1000 + i * 10,
+      coordinates: { lon: 2, lat: 48 + i * 0.1 },
     });
   });
 }

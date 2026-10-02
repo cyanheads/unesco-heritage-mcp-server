@@ -15,6 +15,7 @@ import {
   foldToEnum,
   ichRefInput,
   idNoInput,
+  includeDescriptionInput,
   isBlank,
   limitInput,
   nearInput,
@@ -260,6 +261,35 @@ describe('booleanInput', () => {
   it('does not coerce strings', () => {
     expect(rejects(schema, 'true')).toBe(true);
     expect(rejects(schema, 1)).toBe(true);
+  });
+});
+
+describe('includeDescriptionInput', () => {
+  const schema = includeDescriptionInput('Rows omit the text when false.');
+
+  it('defaults to true when unset or blank and keeps an explicit boolean', () => {
+    expect(parsed(schema, undefined)).toBe(true);
+    expect(parsed(schema, '')).toBe(true);
+    expect(parsed(schema, '  ')).toBe(true);
+    expect(parsed(schema, true)).toBe(true);
+    expect(parsed(schema, false)).toBe(false);
+  });
+
+  it('rejects a non-boolean without coercing it', () => {
+    for (const value of ['false', 'true', 0, 1, null]) expect(rejects(schema, value)).toBe(true);
+  });
+
+  it('advertises a boolean defaulting to true, out of the required list, with the given description', () => {
+    const json = z.toJSONSchema(z.object({ v: schema }), { io: 'input' }) as unknown as {
+      properties: { v: { default?: unknown; description?: string; type?: string } };
+      required?: string[];
+    };
+    expect(json.required ?? []).toEqual([]);
+    expect(json.properties.v).toMatchObject({
+      type: 'boolean',
+      default: true,
+      description: 'Rows omit the text when false.',
+    });
   });
 });
 
