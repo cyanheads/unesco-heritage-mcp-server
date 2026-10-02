@@ -9,8 +9,9 @@
  * @module tests/tools/search-biosphere-reserves.tool.test
  */
 
+import { z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { requestContextService } from '@cyanheads/mcp-ts-core/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchBiosphereReservesTool as tool } from '@/mcp-server/tools/definitions/search-biosphere-reserves.tool.js';
@@ -100,7 +101,7 @@ describe('unesco_search_biosphere_reserves — basics', () => {
     const { out } = await search();
     expect(ids(out)).toEqual(['FRAlder1998', 'DEBrin1993', 'PLBrin1993', 'PEÑandu2001']);
     expect(out.totalCount).toBe(4);
-    expect(out.applied_filters).toEqual({ sort: 'name', limit: 20 });
+    expect(out.applied_filters).toEqual({ sort: 'name', limit: 20, include_description: true });
     expect(out.sources).toEqual([expect.objectContaining({ dataset: 'mab001' })]);
     expect(out.reserves[0]).not.toHaveProperty('matched_in');
     expect(out.reserves[0]).not.toHaveProperty('distance_km');
@@ -146,7 +147,7 @@ describe('unesco_search_biosphere_reserves — basics', () => {
       cursor: '',
     });
     expect(out.totalCount).toBe(4);
-    expect(out.applied_filters).toEqual({ sort: 'name', limit: 20 });
+    expect(out.applied_filters).toEqual({ sort: 'name', limit: 20, include_description: true });
   });
 
   it.each([
@@ -787,7 +788,12 @@ describe('unesco_search_biosphere_reserves — zero-result and under-cap pages (
     expect(out.reserves).toEqual([]);
     expect(out).toMatchObject({ totalCount: 0, truncated: false, shown: 0, cap: 20 });
     expect(out.sources).toHaveLength(1);
-    expect(out.applied_filters).toEqual({ query: 'zzzz', sort: 'relevance', limit: 20 });
+    expect(out.applied_filters).toEqual({
+      query: 'zzzz',
+      sort: 'relevance',
+      limit: 20,
+      include_description: true,
+    });
     expect(out.facets).toEqual({
       region: {
         Africa: 0,
@@ -833,7 +839,7 @@ describe('unesco_search_biosphere_reserves — zero-result and under-cap pages (
     expect(out.notice).toBeUndefined();
     expect(out.next_cursor).toBeUndefined();
     expect(out.sources).toHaveLength(1);
-    expect(out.applied_filters).toEqual({ sort: 'name', limit: 10 });
+    expect(out.applied_filters).toEqual({ sort: 'name', limit: 10, include_description: true });
     expect(Object.keys(out.facets).sort()).toEqual([
       'region',
       'regional_network',
@@ -906,6 +912,179 @@ describe('unesco_search_biosphere_reserves — notices', () => {
     useHub({ rows: { mab001: manyMabRows(45) } });
     const { out } = await search({ limit: 10 });
     expect(out.notice).toBe('Showing results 1–10 of 45; pass next_cursor to continue.');
+  });
+});
+
+describe('unesco_search_biosphere_reserves — include_description', () => {
+  beforeEach(() => {
+    useHub();
+  });
+
+  const reserveBlock = (id: string, facts: string) => [
+    '',
+    `### ${id}`,
+    facts,
+    '> A synthetic reserve used as test data.',
+  ];
+  const DEFAULT_BLOCK = [
+    '**4 biosphere reserves on this page**',
+    ...reserveBlock(
+      'Alderfen Marsh Reserve (FRAlder1998)',
+      `France (FR) · Europe and North America · ${EURO_MAB} · Designated 1998 · Transboundary: No · SIDS: No · Area: 5000 ha (marine 0 ha) · Population: 1000 · Coordinates: 48.5, 2.5`,
+    ),
+    ...reserveBlock(
+      'Brindle Cross-border Reserve (DEBrin1993)',
+      `Germany (DE) · Europe and North America · ${EURO_MAB} · Designated 1993 · Transboundary: Yes · SIDS: No · Area: 5000 ha (marine 0 ha) · Population: 1000 · Coordinates: 52.5, 14.4`,
+    ),
+    ...reserveBlock(
+      'Brindle Cross-border Reserve (PLBrin1993)',
+      `Poland (PL) · Europe and North America · ${EURO_MAB} · Designated 1993 · Transboundary: Yes · SIDS: No · Area: 5000 ha (marine 0 ha) · Population: 1000 · Coordinates: 52.5, 14.6`,
+    ),
+    ...reserveBlock(
+      'Ñandu Highland Reserve (PEÑandu2001)',
+      'Peru (PE) · Latin America and the Caribbean · No regional network · Designated 2001 · Transboundary: No · SIDS: No · Area: 5000 ha (marine 0 ha) · Population: 1000 · Coordinates: -10, -75',
+    ),
+  ].join('\n');
+  const withoutQuotes = (block: string) =>
+    block
+      .split('\n')
+      .filter((l) => !(l === '>' || l.startsWith('> ')))
+      .join('\n');
+
+  it('renders the default page exactly as before', async () => {
+    const { result, out } = await search();
+    expect(textBlocks(result)[0]).toBe(DEFAULT_BLOCK);
+    expect(out.reserves.map((r) => r.introduction)).toEqual(
+      Array(4).fill('A synthetic reserve used as test data.'),
+    );
+  });
+
+  it.each([
+    ['omitted', {}],
+    ['blank', { include_description: ' ' }],
+    ['true', { include_description: true }],
+  ])('keeps rows and format() unchanged when %s, and echoes true', async (_label, option) => {
+    const plain = await search();
+    const { result, out, text } = await search(option);
+    expect(textBlocks(result)[0]).toBe(DEFAULT_BLOCK);
+    expect(out.reserves).toEqual(plain.out.reserves);
+    expect(out.applied_filters).toEqual({ sort: 'name', limit: 20, include_description: true });
+    expect(text.split('\n')).toContain('- include_description: true');
+  });
+
+  it('drops every introduction and its blockquote when false, and echoes false', async () => {
+    const plain = await search();
+    const { result, out, text } = await search({ include_description: false });
+    expect(out.reserves).toEqual(
+      plain.out.reserves.map(({ introduction: _introduction, ...rest }) => rest),
+    );
+    expect(textBlocks(result)[0]).toBe(withoutQuotes(DEFAULT_BLOCK));
+    expect(out.applied_filters.include_description).toBe(false);
+    expect(text.split('\n')).toContain('- include_description: false');
+  });
+
+  it.each([
+    ['the string "false"', 'false'],
+    ['the number 0', 0],
+  ])('rejects %s as an argument error naming the boolean', async (_label, value) => {
+    const error = errorOf(await runToolContract(tool, { include_description: value } as never));
+    expect(error.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(error.data?.reason).toBe('invalid_arguments');
+    expect(error.message).toContain('include_description');
+    expect(error.message).toMatch(/expected boolean/i);
+  });
+
+  it('reports the introduction tier in matched_in when the introduction is omitted', async () => {
+    const { out, text } = await search({ query: 'synthetic', include_description: false });
+    expect(out.reserves).toHaveLength(4);
+    for (const r of out.reserves) {
+      expect(r.matched_in).toBe('introduction');
+      expect(r).not.toHaveProperty('introduction');
+    }
+    expect(text).toContain('Matched in: introduction');
+  });
+
+  it('advertises introduction as optional and validates against the output schema in both modes', async () => {
+    const json = z.toJSONSchema(tool.output, { io: 'output' }) as unknown as {
+      properties: { reserves: { items: { properties: object; required: string[] } } };
+    };
+    expect(json.properties.reserves.items.properties).toHaveProperty('introduction');
+    expect(json.properties.reserves.items.required).not.toContain('introduction');
+    for (const include_description of [true, false]) {
+      const output = await tool.handler(
+        tool.input.parse({ include_description }),
+        createMockContext({ errors: tool.errors }),
+      );
+      expect(() => tool.output.parse(output)).not.toThrow();
+      expect(output.reserves.every((r) => r.introduction !== undefined)).toBe(include_description);
+    }
+  });
+
+  it('describes the option by the field it drops and the tool that returns it', () => {
+    const description = tool.input.shape.include_description.description ?? '';
+    expect(description).toContain('introduction');
+    expect(description).toContain('unesco_get_biosphere_reserve');
+  });
+
+  describe('across pages', () => {
+    beforeEach(() => {
+      useHub({ rows: { mab001: manyMabRows(45) } });
+    });
+
+    it.each([
+      [false, true],
+      [true, false],
+    ])(
+      'continues a cursor minted under include_description %s on a %s call',
+      async (minted, next) => {
+        const first = (await search({ include_description: minted, limit: 10 })).out;
+        const second = (
+          await search({ include_description: next, limit: 10, cursor: first.next_cursor })
+        ).out;
+        const whole = (await search({ limit: 20 })).out;
+        expect([...ids(first), ...ids(second)]).toEqual(ids(whole));
+        expect(second.reserves.every((r) => 'introduction' in r === next)).toBe(true);
+        expect(second.notice).toBe('Showing results 11–20 of 45; pass next_cursor to continue.');
+      },
+    );
+
+    it.each([
+      ['a filter', { region: 'EUR' }],
+      ['the sort', { sort: 'area_largest' }],
+    ])(
+      'still rejects a cursor when %s changes alongside include_description',
+      async (_label, change) => {
+        const first = (await search({ include_description: false, limit: 10 })).out;
+        const error = errorOf(
+          await runToolContract(tool, {
+            include_description: false,
+            limit: 10,
+            ...change,
+            cursor: first.next_cursor,
+          } as never),
+        );
+        expect(error.data?.reason).toBe('cursor_mismatch');
+      },
+    );
+
+    it('keeps the past-the-end and zero-hit notices when false', async () => {
+      const first = (await search({ limit: 10 })).out;
+      const state = readCursor(
+        first.next_cursor as string,
+        requestContextService.createRequestContext({ operation: 'test' }),
+      );
+      const past = await search({
+        include_description: false,
+        cursor: makeCursor({ ...state, offset: 45, limit: 10 }),
+      });
+      expect(past.out.reserves).toEqual([]);
+      expect(past.out.notice).toBe(
+        'The cursor is past the last of 45 results. Call unesco_search_biosphere_reserves without cursor to start over.',
+      );
+      const empty = await search({ query: 'zzzz', include_description: false });
+      expect(empty.out.reserves).toEqual([]);
+      expect(empty.out.notice).toContain('zzzz');
+    });
   });
 });
 

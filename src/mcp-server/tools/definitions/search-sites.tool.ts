@@ -22,6 +22,7 @@ import {
   countryInput,
   cursorInput,
   foldToEnum,
+  includeDescriptionInput,
   isBlank,
   limitInput,
   MAX_QUERY_WORDS,
@@ -49,7 +50,7 @@ import {
   readCursor,
   topCounts,
 } from '@/services/unesco-datahub/search.js';
-import type { HeritageSite } from '@/services/unesco-datahub/types.js';
+import type { HeritageSite, SiteComponent } from '@/services/unesco-datahub/types.js';
 import {
   getUnescoDataHubService,
   sourceOf,
@@ -123,14 +124,32 @@ const SiteRow = z
     distance_km: z
       .number()
       .optional()
-      .describe('Distance from the near point in km (present when near is set).'),
+      .describe(
+        "Distance in km from the near point to the nearest of the site's representative point and its components (present when near is set).",
+      ),
+    nearest_component: z
+      .object({
+        ref: z.string().describe('Component reference.'),
+        name: z.string().optional().describe('Component name; absent when UNESCO lists none.'),
+        latitude: z.number().describe('Component point latitude.'),
+        longitude: z.number().describe('Component point longitude.'),
+      })
+      .optional()
+      .describe(
+        'The component distance_km is measured to; present when near is set and a component is nearer than the representative point at distance_km precision (0.1 km; a tie keeps the representative point), or the site has no representative point.',
+      ),
     matched_in: z
       .enum(MATCH_TIERS)
       .optional()
       .describe(
         'The first field tier by which every query word had matched; justification is the statement of Outstanding Universal Value (present when query is set).',
       ),
-    description: z.string().optional().describe("UNESCO's short description, when recorded."),
+    description: z
+      .string()
+      .optional()
+      .describe(
+        "UNESCO's short description, when recorded; omitted from every row when include_description is false.",
+      ),
   })
   .describe('One World Heritage site.');
 type SiteRowT = z.infer<typeof SiteRow>;
@@ -198,6 +217,7 @@ const AppliedFiltersSchema = z
       .describe('Distance filter.'),
     sort: z.enum(SORTS).describe('The sort applied (resolved default when none was given).'),
     limit: z.number().describe('Page size.'),
+    include_description: z.boolean().describe('Whether rows carry their description.'),
   })
   .describe('The filters and sort as the server applied them.');
 type AppliedFilters = z.infer<typeof AppliedFiltersSchema>;
@@ -245,10 +265,13 @@ export const searchSitesTool = tool('unesco_search_sites', {
     inscribed_from: yearInput('Earliest inscription year, inclusive.'),
     inscribed_to: yearInput('Latest inscription year, inclusive.'),
     near: nearInput(
-      'Only sites within radius_km of this point. Sites without recorded coordinates never match.',
+      'Only sites within radius_km of this point: a site matches when its representative point or any of its components lies within the radius, and a site with neither never matches. distance_km and the distance sort use the nearest of those points.',
     ),
     sort: blankAsUnset(z.enum(SORTS).optional()).describe(
       'Result order. Default: relevance when query is set, else distance when near is set, else name. relevance needs query; distance needs near. Absent areas and Danger years sort last.',
+    ),
+    include_description: includeDescriptionInput(
+      "Set false to leave each row's description out of the response (default true); unesco_get_site returns it. Which sites match, their order, and matched_in are unchanged.",
     ),
     limit: limitInput,
     cursor: cursorInput,
@@ -260,6 +283,12 @@ export const searchSitesTool = tool('unesco_search_sites', {
       .optional()
       .describe(
         'Pass as cursor, with the same filters and sort, to fetch the next page. Present when more results remain.',
+      ),
+    descriptions_omitted: z
+      .literal(true)
+      .optional()
+      .describe(
+        'Present when include_description is false: no row carries its description, which unesco_get_site returns.',
       ),
   }),
   enrichment: {
@@ -375,8 +404,9 @@ export const searchSitesTool = tool('unesco_search_sites', {
       ...(input.near ? { near: input.near } : {}),
       sort,
       limit: input.limit,
+      include_description: input.include_description,
     };
-    const { limit: _limit, ...fingerprinted } = applied;
+    const { limit: _limit, include_description: _includeDescription, ...fingerprinted } = applied;
     const fp = fingerprint(fingerprinted);
 
     let offset = 0;
@@ -396,13 +426,8 @@ export const searchSitesTool = tool('unesco_search_sites', {
     const words = input.query ? queryWords(input.query) : [];
     const tierOf = input.query ? folded.map((tiers) => matchTier(words, tiers)) : [];
     const near = input.near;
-    const distanceOf = near
-      ? records.map((s) =>
-          s.latitude !== undefined && s.longitude !== undefined
-            ? haversineKm(near.latitude, near.longitude, s.latitude, s.longitude)
-            : undefined,
-        )
-      : [];
+    const nearest = near ? records.map((s) => nearestPoint(s, near.latitude, near.longitude)) : [];
+    const distanceOf = nearest.map((n) => n?.km);
 
     const filters: NamedFilter<HeritageSite>[] = [];
     if (input.query) filters.push({ name: 'query', test: (_s, i) => tierOf[i] !== undefined });
@@ -447,7 +472,9 @@ export const searchSitesTool = tool('unesco_search_sites', {
     matched.sort(siteComparator(sort, records, tierOf, distanceOf));
     const page = matched
       .slice(offset, offset + input.limit)
-      .map((i) => toRow(records[i] as HeritageSite, tierOf[i], distanceOf[i]));
+      .map((i) =>
+        toRow(records[i] as HeritageSite, tierOf[i], nearest[i], input.include_description),
+      );
     ctx.enrich({ truncated: false, shown: page.length, cap: input.limit });
 
     const fragments: string[] = [];
@@ -472,9 +499,13 @@ export const searchSitesTool = tool('unesco_search_sites', {
         );
       }
       if (near && alone('near') === 0) {
-        const noCoords = records.filter((s) => s.latitude === undefined).length;
+        const pointless = nearest.filter((n) => n === undefined).length;
+        const neverMatch =
+          pointless > 0
+            ? `, and ${countOf(pointless, 'site')} ${pointless === 1 ? 'has' : 'have'} no coordinates at all, so ${pointless === 1 ? 'it never matches' : 'they never match'} near`
+            : '';
         fragments.push(
-          `No site with coordinates lies within ${near.radius_km} km of (${near.latitude}, ${near.longitude}), and ${countOf(noCoords, 'site')} ${noCoords === 1 ? 'has' : 'have'} no coordinates, so ${noCoords === 1 ? 'it never matches' : 'they never match'} near. Increase radius_km.`,
+          `No site's representative point or component lies within ${near.radius_km} km of (${near.latitude}, ${near.longitude})${neverMatch}. Increase radius_km.`,
         );
       }
     }
@@ -505,11 +536,20 @@ export const searchSitesTool = tool('unesco_search_sites', {
     }
 
     ctx.log.info('Sites searched', { total, shown: page.length, offset, sort });
-    return { sites: page, ...(next_cursor ? { next_cursor } : {}) };
+    return {
+      sites: page,
+      ...(next_cursor ? { next_cursor } : {}),
+      ...(input.include_description ? {} : { descriptions_omitted: true as const }),
+    };
   },
 
   format: (result) => {
     const lines = [`**${countOf(result.sites.length, 'World Heritage site')} on this page**`];
+    if (result.descriptions_omitted) {
+      lines.push(
+        "Descriptions omitted (include_description: false); unesco_get_site returns a site's description.",
+      );
+    }
     for (const s of result.sites) {
       const states = s.states.map((state, i) => {
         const code = s.country_codes[i];
@@ -533,25 +573,59 @@ export const searchSitesTool = tool('unesco_search_sites', {
         s.latitude !== undefined && s.longitude !== undefined
           ? `Coordinates: ${s.latitude}, ${s.longitude}`
           : 'Coordinates: Not available',
-        ...(s.distance_km !== undefined ? [`Distance: ${s.distance_km} km`] : []),
+        ...(s.distance_km !== undefined
+          ? [`Distance: ${s.distance_km} km${componentNote(s.nearest_component)}`]
+          : []),
         ...(s.matched_in ? [`Matched in: ${s.matched_in}`] : []),
       ];
-      lines.push(
-        '',
-        `### ${inline(s.name)} (id_no ${s.id_no})`,
-        facts.join(' · '),
-        s.description ? quote(s.description) : 'Description: Not available',
-      );
+      lines.push('', `### ${inline(s.name)} (id_no ${s.id_no})`, facts.join(' · '));
+      if (s.description) lines.push(quote(s.description));
+      else if (!result.descriptions_omitted) lines.push('Description: Not available');
     }
     if (result.next_cursor) lines.push('', `Next cursor: ${result.next_cursor}`);
     return [{ type: 'text', text: lines.join('\n') }];
   },
 });
 
+/** A site's distance from the `near` point, and the component it was measured to, if any. */
+interface NearestPoint {
+  component?: SiteComponent;
+  km: number;
+}
+
+/**
+ * The nearest of a site's points to (lat, lon), on the rounded distance: its
+ * representative point unless a component is strictly nearer, in which case the
+ * nearest component (the earlier in UNESCO order on a tie). Undefined when the
+ * site has neither.
+ */
+function nearestPoint(site: HeritageSite, lat: number, lon: number): NearestPoint | undefined {
+  let nearest: NearestPoint | undefined =
+    site.latitude !== undefined && site.longitude !== undefined
+      ? { km: haversineKm(lat, lon, site.latitude, site.longitude) }
+      : undefined;
+  for (const component of site.components) {
+    const km = haversineKm(lat, lon, component.latitude, component.longitude);
+    if (!nearest || km < nearest.km) nearest = { km, component };
+  }
+  return nearest;
+}
+
+/**
+ * ` (component {ref} {name} at {lat}, {lon})` for the distance fact, the name
+ * left out for a nameless component; empty when no component is nearest.
+ */
+function componentNote(component: SiteRowT['nearest_component']): string {
+  if (!component) return '';
+  const name = component.name ? ` ${inline(component.name)}` : '';
+  return ` (component ${inline(component.ref)}${name} at ${component.latitude}, ${component.longitude})`;
+}
+
 function toRow(
   site: HeritageSite,
   tier: number | undefined,
-  distance: number | undefined,
+  nearest: NearestPoint | undefined,
+  includeDescription: boolean,
 ): SiteRowT {
   return {
     id_no: site.id_no,
@@ -571,9 +645,10 @@ function toRow(
     ...(site.area_hectares !== undefined ? { area_hectares: site.area_hectares } : {}),
     ...(site.latitude !== undefined ? { latitude: site.latitude } : {}),
     ...(site.longitude !== undefined ? { longitude: site.longitude } : {}),
-    ...(distance !== undefined ? { distance_km: distance } : {}),
+    ...(nearest ? { distance_km: nearest.km } : {}),
+    ...(nearest?.component ? { nearest_component: nearest.component } : {}),
     ...(tier !== undefined ? { matched_in: MATCH_TIERS[tier] } : {}),
-    ...(site.description ? { description: site.description } : {}),
+    ...(includeDescription && site.description ? { description: site.description } : {}),
   };
 }
 
@@ -669,6 +744,10 @@ function renderAppliedFilters(a: AppliedFilters): string {
   if (a.inscribed_to !== undefined) lines.push(`- inscribed_to: ${a.inscribed_to}`);
   if (a.near)
     lines.push(`- near: ${a.near.latitude}, ${a.near.longitude} within ${a.near.radius_km} km`);
-  lines.push(`- sort: ${a.sort}`, `- limit: ${a.limit}`);
+  lines.push(
+    `- sort: ${a.sort}`,
+    `- limit: ${a.limit}`,
+    `- include_description: ${a.include_description}`,
+  );
   return lines.join('\n');
 }

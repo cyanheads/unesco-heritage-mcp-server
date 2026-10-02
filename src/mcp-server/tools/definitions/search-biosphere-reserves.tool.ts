@@ -23,6 +23,7 @@ import {
   countryInput,
   cursorInput,
   foldToEnum,
+  includeDescriptionInput,
   limitInput,
   MAX_QUERY_WORDS,
   nearInput,
@@ -113,7 +114,12 @@ const ReserveRow = z
       .describe(
         'The first field tier by which every query word had matched (present when query is set).',
       ),
-    introduction: z.string().describe("UNESCO's introduction to the reserve."),
+    introduction: z
+      .string()
+      .optional()
+      .describe(
+        "UNESCO's introduction to the reserve; omitted from every row when include_description is false.",
+      ),
   })
   .describe('One biosphere reserve.');
 type ReserveRowT = z.infer<typeof ReserveRow>;
@@ -184,6 +190,7 @@ const AppliedFiltersSchema = z
       .describe('Distance filter.'),
     sort: z.enum(SORTS).describe('The sort applied (resolved default when none was given).'),
     limit: z.number().describe('Page size.'),
+    include_description: z.boolean().describe('Whether rows carry their introduction.'),
   })
   .describe('The filters and sort as the server applied them.');
 type AppliedFilters = z.infer<typeof AppliedFiltersSchema>;
@@ -220,6 +227,9 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
     near: nearInput('Only reserves within radius_km of this point. Every reserve has coordinates.'),
     sort: blankAsUnset(z.enum(SORTS).optional()).describe(
       'Result order. Default: relevance when query is set, else distance when near is set, else name. relevance needs query; distance needs near. area_largest orders by total recorded area.',
+    ),
+    include_description: includeDescriptionInput(
+      "Set false to leave each row's introduction out of the response (default true); unesco_get_biosphere_reserve returns it. Which reserves match, their order, and matched_in are unchanged.",
     ),
     limit: limitInput,
     cursor: cursorInput,
@@ -342,8 +352,9 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
       ...(input.near ? { near: input.near } : {}),
       sort,
       limit: input.limit,
+      include_description: input.include_description,
     };
-    const { limit: _limit, ...fingerprinted } = applied;
+    const { limit: _limit, include_description: _includeDescription, ...fingerprinted } = applied;
     const fp = fingerprint(fingerprinted);
 
     let offset = 0;
@@ -407,7 +418,9 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
     matched.sort(reserveComparator(sort, records, tierOf, distanceOf));
     const page = matched
       .slice(offset, offset + input.limit)
-      .map((i) => toRow(records[i] as BiosphereReserve, tierOf[i], distanceOf[i]));
+      .map((i) =>
+        toRow(records[i] as BiosphereReserve, tierOf[i], distanceOf[i], input.include_description),
+      );
     ctx.enrich({ truncated: false, shown: page.length, cap: input.limit });
 
     const fragments: string[] = [];
@@ -477,12 +490,8 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
         ...(r.distance_km !== undefined ? [`Distance: ${r.distance_km} km`] : []),
         ...(r.matched_in ? [`Matched in: ${r.matched_in}`] : []),
       ];
-      lines.push(
-        '',
-        `### ${inline(r.name)} (${inline(r.mab_id)})`,
-        facts.join(' · '),
-        quote(r.introduction),
-      );
+      lines.push('', `### ${inline(r.name)} (${inline(r.mab_id)})`, facts.join(' · '));
+      if (r.introduction !== undefined) lines.push(quote(r.introduction));
     }
     if (result.next_cursor) lines.push('', `Next cursor: ${result.next_cursor}`);
     return [{ type: 'text', text: lines.join('\n') }];
@@ -493,6 +502,7 @@ function toRow(
   reserve: BiosphereReserve,
   tier: number | undefined,
   distance: number | undefined,
+  includeDescription: boolean,
 ): ReserveRowT {
   return {
     mab_id: reserve.mab_id,
@@ -511,7 +521,7 @@ function toRow(
     longitude: reserve.longitude,
     ...(distance !== undefined ? { distance_km: distance } : {}),
     ...(tier !== undefined ? { matched_in: MATCH_TIERS[tier] } : {}),
-    introduction: reserve.introduction,
+    ...(includeDescription ? { introduction: reserve.introduction } : {}),
   };
 }
 
@@ -586,6 +596,10 @@ function renderAppliedFilters(a: AppliedFilters): string {
   if (a.designated_to !== undefined) lines.push(`- designated_to: ${a.designated_to}`);
   if (a.near)
     lines.push(`- near: ${a.near.latitude}, ${a.near.longitude} within ${a.near.radius_km} km`);
-  lines.push(`- sort: ${a.sort}`, `- limit: ${a.limit}`);
+  lines.push(
+    `- sort: ${a.sort}`,
+    `- limit: ${a.limit}`,
+    `- include_description: ${a.include_description}`,
+  );
   return lines.join('\n');
 }

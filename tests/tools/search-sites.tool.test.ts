@@ -7,7 +7,7 @@
  * @module tests/tools/search-sites.tool.test
  */
 
-import type { z } from '@cyanheads/mcp-ts-core';
+import { z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { encodeCursor } from '@cyanheads/mcp-ts-core/utils';
@@ -16,7 +16,7 @@ import { searchSitesTool } from '@/mcp-server/tools/definitions/search-sites.too
 import { makeCursor, readCursor } from '@/services/unesco-datahub/search.js';
 import { declaredRecovery } from '../fixtures/contract.js';
 import { DATA_AS_OF, type HubOptions, httpFailure } from '../fixtures/hub.js';
-import { WHC_ROWS, whcRow } from '../fixtures/rows.js';
+import { NEAR_POINT, NEAR_SITE_ROWS, WHC_ROWS, whcRow } from '../fixtures/rows.js';
 import {
   allText,
   disposeServiceAfterEach,
@@ -88,7 +88,12 @@ describe('unesco_search_sites — enrichment contract pages', () => {
     });
     expect(out.sources).toHaveLength(1);
     expect(out.sources[0]).toMatchObject({ dataset: 'whc001', license: 'CC BY-SA 4.0' });
-    expect(out.applied_filters).toEqual({ query: 'nomatchword', sort: 'relevance', limit: 20 });
+    expect(out.applied_filters).toEqual({
+      query: 'nomatchword',
+      sort: 'relevance',
+      limit: 20,
+      include_description: true,
+    });
     expect(out.notice).toContain('nomatchword');
     expect(text).toContain('**0 World Heritage sites on this page**');
     expect(text).toContain('Top countries: none');
@@ -128,14 +133,14 @@ describe('unesco_search_sites — blank inputs read as unset', () => {
       limit: '',
       cursor: '',
     });
-    expect(out.applied_filters).toEqual({ sort: 'name', limit: 20 });
+    expect(out.applied_filters).toEqual({ sort: 'name', limit: 20, include_description: true });
     expect(out.totalCount).toBe(WHC_ROWS.length);
     expect(out.sites).toHaveLength(20);
   });
 
   it('treats a blank criteria string and a blank near string as unset', async () => {
     const { out } = await search({ criteria: '', near: '' });
-    expect(out.applied_filters).toEqual({ sort: 'name', limit: 20 });
+    expect(out.applied_filters).toEqual({ sort: 'name', limit: 20, include_description: true });
   });
 
   it('applies the near default radius of 100 km when radius_km is blank', async () => {
@@ -564,7 +569,7 @@ describe('unesco_search_sites — near', () => {
     expect(out.applied_filters.near).toEqual({ latitude: 48, longitude: 2, radius_km: 100 });
   });
 
-  it('widens with the radius and never matches sites without coordinates', async () => {
+  it('widens with the radius, still leaving out 103 (its one component lies beyond it) and 105 (no point at all)', async () => {
     const { out } = await search({
       near: { latitude: 48, longitude: 2, radius_km: 5000 },
       limit: 50,
@@ -594,6 +599,150 @@ describe('unesco_search_sites — near', () => {
       }),
     );
     expect(error.data?.reason).toBe('cursor_mismatch');
+  });
+});
+
+describe('unesco_search_sites — near over representative points and components', () => {
+  beforeEach(() => {
+    useHub({ rows: { whc001: NEAR_SITE_ROWS } });
+  });
+
+  const near = (radius_km: number) => ({ near: { ...NEAR_POINT, radius_km } });
+  const row = (out: SearchOutput, id: string) => out.sites.find((s) => s.id_no === id) as SiteRow;
+
+  it('keeps the representative point as the row coordinates and never matches a site with no point at all', async () => {
+    const { out } = await search({ ...near(5000), limit: 50 });
+    expect(row(out, '505')).toMatchObject({ latitude: 60.02, longitude: 5, distance_km: 2.2 });
+    expect(ids(out)).not.toContain('503');
+  });
+
+  it('matches a serial site through a component when its representative point is out of range', async () => {
+    const { out } = await search(near(30));
+    expect(row(out, '501')).toMatchObject({
+      latitude: 10,
+      longitude: 10,
+      distance_km: 5.6,
+      nearest_component: {
+        ref: '501-002',
+        name: 'Quayside Lodge',
+        latitude: 60.05,
+        longitude: 5,
+      },
+    });
+  });
+
+  it('matches a site with components and no representative point through them', async () => {
+    const { out } = await search(near(30));
+    const site = row(out, '502');
+    expect(site).toMatchObject({ distance_km: 3.3 });
+    expect(site.nearest_component).toEqual({ ref: '502-002', latitude: 59.97, longitude: 5 });
+    expect(site).not.toHaveProperty('latitude');
+    expect(site).not.toHaveProperty('longitude');
+  });
+
+  it('sorts by the nearest point and reports the nearer distance for a site its representative point already matched', async () => {
+    const { out } = await search(near(30));
+    expect(out.totalCount).toBe(5);
+    expect(out.sites.map((s) => [s.id_no, s.distance_km])).toEqual([
+      ['505', 2.2],
+      ['502', 3.3],
+      ['507', 4.4],
+      ['501', 5.6],
+      ['506', 11.1],
+    ]);
+    expect(row(out, '507').nearest_component).toEqual({
+      ref: '507-001',
+      name: 'Gatehouse',
+      latitude: 60.04,
+      longitude: 5,
+    });
+  });
+
+  it('names a component only when it is strictly nearer than the representative point on the rounded distance', async () => {
+    const { out } = await search(near(50));
+    expect(row(out, '507')).toHaveProperty('nearest_component');
+    expect(row(out, '504')).toMatchObject({ distance_km: 33.4 });
+    expect(row(out, '504')).not.toHaveProperty('nearest_component'); // component on the point
+    expect(row(out, '505')).not.toHaveProperty('nearest_component'); // point nearer
+    expect(row(out, '506')).toMatchObject({ distance_km: 11.1 });
+    expect(row(out, '506')).not.toHaveProperty('nearest_component'); // tie once rounded
+  });
+
+  it('names the component on the distance fact in format(), by ref alone when it has no name', async () => {
+    const { result, out } = await search(near(30));
+    const lines = (textBlocks(result)[0] ?? '').split('\n');
+    const factsOf = (id: string) => {
+      const heading = lines.findIndex((l) => l.endsWith(`(id_no ${id})`));
+      return lines[heading + 1] ?? '';
+    };
+    expect(factsOf('501')).toContain(
+      '· Coordinates: 10, 10 · Distance: 5.6 km (component 501-002 Quayside Lodge at 60.05, 5)',
+    );
+    expect(factsOf('502')).toContain(
+      '· Coordinates: Not available · Distance: 3.3 km (component 502-002 at 59.97, 5)',
+    );
+    expect(factsOf('505')).toMatch(/· Distance: 2\.2 km$/);
+    expect(out.sites).toHaveLength(5);
+  });
+
+  it('pages the component matches by distance, with a continuation notice, and reports a cursor past the end', async () => {
+    const first = await search({ ...near(30), limit: 2 });
+    expect(ids(first.out)).toEqual(['505', '502']);
+    expect(first.out).toMatchObject({ totalCount: 5, shown: 2, cap: 2, truncated: true });
+    expect(first.out.notice).toBe('Showing results 1–2 of 5; pass next_cursor to continue.');
+    const second = await search({ ...near(30), limit: 2, cursor: first.out.next_cursor });
+    expect(ids(second.out)).toEqual(['507', '501']);
+    expect(second.out.sites.map((s) => s.nearest_component?.ref)).toEqual(['507-001', '501-002']);
+    const last = await search({ ...near(30), limit: 2, cursor: second.out.next_cursor });
+    expect(ids(last.out)).toEqual(['506']);
+    expect(last.out.next_cursor).toBeUndefined();
+    const { fp, asOf } = await cursorFor(near(30));
+    const past = await search({
+      ...near(30),
+      cursor: makeCursor({ offset: 10, limit: 20, fp, asOf }),
+    });
+    expect(past.out.sites).toEqual([]);
+    expect(past.out.notice).toBe(
+      'The cursor is past the last of 5 results. Call unesco_search_sites without cursor to start over.',
+    );
+  });
+
+  it('counts the component matches in the facets and in the single-removal fragment', async () => {
+    const { out } = await search(near(30));
+    expect(out.facets.category).toEqual({ Cultural: 5, Natural: 0, Mixed: 0 });
+    const combined = await search({ ...near(30), category: 'Natural' });
+    expect(combined.out.totalCount).toBe(0);
+    expect(combined.out.notice).toContain('Removing category alone would match 5 sites.');
+  });
+
+  it('advertises nearest_component with the unesco_get_site component shape', () => {
+    const json = z.toJSONSchema(searchSitesTool.output, { io: 'output' }) as unknown as {
+      properties: {
+        sites: {
+          items: {
+            properties: Record<
+              string,
+              { properties?: Record<string, unknown>; required?: string[] }
+            >;
+            required: string[];
+          };
+        };
+      };
+    };
+    const rowSchema = json.properties.sites.items;
+    expect(rowSchema.required).not.toContain('nearest_component');
+    expect(Object.keys(rowSchema.properties.nearest_component?.properties ?? {}).sort()).toEqual([
+      'latitude',
+      'longitude',
+      'name',
+      'ref',
+    ]);
+    expect(rowSchema.properties.nearest_component?.required?.sort()).toEqual([
+      'latitude',
+      'longitude',
+      'ref',
+    ]);
+    expect(searchSitesTool.input.shape.near.description).toContain('component');
   });
 });
 
@@ -765,8 +914,24 @@ describe('unesco_search_sites — zero-hit notices', () => {
   it('explains a near search with nothing in range and counts the sites without coordinates', async () => {
     const { out } = await search({ near: { latitude: 0, longitude: -160, radius_km: 10 } });
     expect(out.totalCount).toBe(0);
-    expect(out.notice).toContain('No site with coordinates lies within 10 km of (0, -160)');
-    expect(out.notice).toContain('2 sites have no coordinates');
+    expect(out.notice).toBe(
+      "No site's representative point or component lies within 10 km of (0, -160), and 1 site has no coordinates at all, so it never matches near. Increase radius_km.",
+    );
+  });
+
+  it('counts only sites with no point at all, and drops the clause when every site has one', async () => {
+    const bare = (id: string) =>
+      whcRow({ id_no: id, coordinates: null, components_count: 0, components_list: null });
+    useHub({ rows: { whc001: [whcRow({ id_no: '1' }), bare('2'), bare('3')] } });
+    const two = await search({ near: { latitude: 0, longitude: -160, radius_km: 10 } });
+    expect(two.out.notice).toBe(
+      "No site's representative point or component lies within 10 km of (0, -160), and 2 sites have no coordinates at all, so they never match near. Increase radius_km.",
+    );
+    useHub({ rows: { whc001: [whcRow({ id_no: '1' })] } });
+    const none = await search({ near: { latitude: 0, longitude: -160, radius_km: 10 } });
+    expect(none.out.notice).toBe(
+      "No site's representative point or component lies within 10 km of (0, -160). Increase radius_km.",
+    );
   });
 
   it('does not add a zero-hit notice to a search that has results', async () => {
@@ -1056,6 +1221,228 @@ describe('unesco_search_sites — format() parity and text safety', () => {
     expect(text).toContain('Matched in: name');
     expect(text).toContain('> d1\n> d2');
     expect(lines.at(-1)).toBe('Next cursor: abc');
+  });
+
+  it('flattens and escapes a nearest component ref and name on the distance fact', () => {
+    const site = {
+      id_no: '2',
+      name: 'Serial',
+      category: 'Cultural',
+      states: ['S'],
+      country_codes: ['AA'],
+      region: 'Africa',
+      transboundary: false,
+      inscribed_year: 2000,
+      criteria: [],
+      in_danger: false,
+      distance_km: 0.4,
+      nearest_component: {
+        ref: '2-001\n# ref',
+        name: 'Part [x](http://e.test)\r\n## Name',
+        latitude: 1,
+        longitude: 2,
+      },
+    } satisfies SiteRow;
+    const [block] = searchSitesTool.format?.({ sites: [site] } as never) ?? [];
+    const text = block?.type === 'text' ? block.text : '';
+    expect(text).toContain(
+      '· Distance: 0.4 km (component 2-001 # ref Part \\[x\\](http://e.test) ## Name at 1, 2)',
+    );
+    expect(text.split('\n').some((l) => l.startsWith('# ref') || l.startsWith('## Name'))).toBe(
+      false,
+    );
+  });
+});
+
+describe('unesco_search_sites — include_description', () => {
+  beforeEach(() => {
+    useHub();
+  });
+
+  const DE_BLOCK = [
+    '**3 World Heritage sites on this page**',
+    '',
+    '### Brindle Frontier Forest (id_no 102)',
+    'Natural · Europe and North America · Germany (DE), Poland (PL) · Transboundary: Yes · Inscribed 1992 · Criteria: ix, x · In Danger since 2015 · Area: 5000 ha · Coordinates: 52.5, 14.5',
+    '> A synthetic forest shared by two states.',
+    '',
+    '### Lantern Bridge Quarter (id_no 107)',
+    'Cultural · Europe and North America · Germany (DE) · Transboundary: No · Inscribed 1999 · Criteria: iv · Not in Danger · Area: 3 ha · Coordinates: 50.1, 8.7',
+    "> Text with a 'quoted' word & more.",
+    '> Second line here.',
+    '',
+    '### Reedhaven Components Test (id_no 108)',
+    'Cultural · Europe and North America · Germany (DE) · Transboundary: No · Inscribed 2003 · Criteria: iv · Not in Danger · Area: 10 ha · Coordinates: 51, 9',
+    '> A synthetic site with awkward component entries.',
+  ].join('\n');
+  const DE_FIRST_ROW = {
+    id_no: '102',
+    name: 'Brindle Frontier Forest',
+    category: 'Natural',
+    states: ['Germany', 'Poland'],
+    country_codes: ['DE', 'PL'],
+    region: 'Europe and North America',
+    transboundary: true,
+    inscribed_year: 1992,
+    criteria: ['ix', 'x'],
+    in_danger: true,
+    danger_listed_year: 2015,
+    area_hectares: 5000,
+    latitude: 52.5,
+    longitude: 14.5,
+    description: 'A synthetic forest shared by two states.',
+  };
+  const OMITTED_NOTE =
+    "Descriptions omitted (include_description: false); unesco_get_site returns a site's description.";
+  /** The default block with the omission note under its header and every description line gone. */
+  const omittedBlock = (block: string) => {
+    const [header, ...rest] = block.split('\n');
+    const kept = rest.filter(
+      (l) => !(l === '>' || l.startsWith('> ') || l === 'Description: Not available'),
+    );
+    return [header, OMITTED_NOTE, ...kept].join('\n');
+  };
+
+  it('renders the default page and rows exactly as before', async () => {
+    const { result, out } = await search({ country: 'DE' });
+    expect(textBlocks(result)[0]).toBe(DE_BLOCK);
+    expect(out.sites[0]).toEqual(DE_FIRST_ROW);
+  });
+
+  it.each([
+    ['omitted', {}],
+    ['blank', { include_description: '' }],
+    ['true', { include_description: true }],
+  ])('keeps rows and format() unchanged when %s, and echoes true', async (_label, option) => {
+    const { result, out, text } = await search({ country: 'DE', ...option });
+    expect(textBlocks(result)[0]).toBe(DE_BLOCK);
+    expect(out.sites[0]).toEqual(DE_FIRST_ROW);
+    expect(out).not.toHaveProperty('descriptions_omitted');
+    expect(out.applied_filters).toEqual({
+      country: { code: 'DE', name: 'Germany' },
+      sort: 'name',
+      limit: 20,
+      include_description: true,
+    });
+    expect(text.split('\n')).toContain('- include_description: true');
+  });
+
+  it('drops every row description and its blockquote when false, and echoes false', async () => {
+    const { result, out, text } = await search({ country: 'DE', include_description: false });
+    expect(out.sites).toHaveLength(3);
+    for (const site of out.sites) expect(site).not.toHaveProperty('description');
+    const { description: _description, ...rest } = DE_FIRST_ROW;
+    expect(out.sites[0]).toEqual(rest);
+    expect(out.descriptions_omitted).toBe(true);
+    expect(textBlocks(result)[0]).toBe(omittedBlock(DE_BLOCK));
+    expect(out.applied_filters.include_description).toBe(false);
+    expect(text.split('\n')).toContain('- include_description: false');
+  });
+
+  it('prints no "Description: Not available" for a site with no description when false', async () => {
+    const shown = await search({ query: 'hollowmere' });
+    expect(shown.text).toContain('Description: Not available');
+    const omitted = await search({ query: 'hollowmere', include_description: false });
+    expect(omitted.out.sites.map((s) => s.id_no)).toEqual(['105']);
+    expect(omitted.text).not.toContain('Description:');
+    expect(textBlocks(omitted.result)[0]).toBe(omittedBlock(textBlocks(shown.result)[0] ?? ''));
+  });
+
+  it.each([
+    ['the string "false"', 'false'],
+    ['the number 0', 0],
+    ['the string "true"', 'true'],
+  ])('rejects %s as an argument error naming the boolean', async (_label, value) => {
+    const error = errorOf(
+      await runToolContract(searchSitesTool, { include_description: value } as never),
+    );
+    expect(error.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(error.data?.reason).toBe('invalid_arguments');
+    expect(error.message).toContain('include_description');
+    expect(error.message).toMatch(/expected boolean/i);
+  });
+
+  it.each([
+    [false, true],
+    [true, false],
+  ])(
+    'continues a cursor minted under include_description %s on a %s call',
+    async (minted, next) => {
+      const first = await search({ include_description: minted, limit: 5 });
+      const second = await search({
+        include_description: next,
+        limit: 5,
+        cursor: first.out.next_cursor,
+      });
+      const whole = await search({ limit: 10 });
+      expect([...ids(first.out), ...ids(second.out)]).toEqual(ids(whole.out));
+      expect(second.out.sites.every((s) => 'description' in s === next)).toBe(true);
+      expect(second.out.notice).toBe('Showing results 6–10 of 39; pass next_cursor to continue.');
+    },
+  );
+
+  it.each([
+    ['a filter', { country: 'DE' }],
+    ['the sort', { sort: 'inscribed_newest' }],
+  ])(
+    'still rejects a cursor when %s changes alongside include_description',
+    async (_label, change) => {
+      const first = await search({ country: 'FR', include_description: false, limit: 1 });
+      const error = errorOf(
+        await runToolContract(searchSitesTool, {
+          country: 'FR',
+          include_description: false,
+          ...change,
+          cursor: first.out.next_cursor,
+        } as never),
+      );
+      expect(error.data?.reason).toBe('cursor_mismatch');
+    },
+  );
+
+  it('reports the description and justification tiers in matched_in when the text is omitted', async () => {
+    const walled = await search({ query: 'walled', include_description: false });
+    expect(walled.out.sites[0]).toMatchObject({ id_no: '101', matched_in: 'description' });
+    expect(walled.out.sites[0]).not.toHaveProperty('description');
+    expect(walled.text).toContain('Matched in: description');
+    const exchange = await search({ query: 'exchange', include_description: false });
+    expect(exchange.out.sites[0]?.matched_in).toBe('justification');
+  });
+
+  it('validates against the output schema in both modes', async () => {
+    for (const include_description of [true, false]) {
+      const output = await searchSitesTool.handler(
+        searchSitesTool.input.parse({ include_description, limit: 50 }),
+        createMockContext({ errors: searchSitesTool.errors }),
+      );
+      expect(() => searchSitesTool.output.parse(output)).not.toThrow();
+      expect(output.sites).toHaveLength(39);
+      expect(output.sites.some((s) => s.description !== undefined)).toBe(include_description);
+    }
+  });
+
+  it('keeps the zero-hit notice, the truncation notice, and the past-the-end notice when false', async () => {
+    const empty = await search({ query: 'nomatchword', include_description: false });
+    expect(empty.out.sites).toEqual([]);
+    expect(empty.out.notice).toContain('nomatchword');
+    expect(empty.out.applied_filters.include_description).toBe(false);
+    const capped = await search({ include_description: false, limit: 1 });
+    expect(capped.out).toMatchObject({ truncated: true, shown: 1, cap: 1 });
+    expect(capped.text).toContain(`Next cursor: ${capped.out.next_cursor}`);
+    const { fp, asOf } = await cursorFor({});
+    const past = await search({
+      include_description: false,
+      cursor: makeCursor({ offset: 100, limit: 20, fp, asOf }),
+    });
+    expect(past.out.notice).toBe(
+      'The cursor is past the last of 39 results. Call unesco_search_sites without cursor to start over.',
+    );
+  });
+
+  it('describes the option by the field it drops and the tool that returns it', () => {
+    const description = searchSitesTool.input.shape.include_description.description ?? '';
+    expect(description).toContain('description');
+    expect(description).toContain('unesco_get_site');
   });
 });
 
