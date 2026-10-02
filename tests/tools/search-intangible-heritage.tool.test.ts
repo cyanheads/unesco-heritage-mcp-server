@@ -779,8 +779,17 @@ describe('unesco_search_intangible_heritage — notices', () => {
     const { out } = await search({ inscribed_from: 2005, inscribed_to: 2007 });
     expect(out.totalCount).toBe(0);
     expect(out.notice).toMatch(
-      /^No element matched all 2 filters\. Removing inscribed_to alone would match 3 elements\.$/,
+      /^No element matched all 2 filters\. Removing inscribed_to alone would match 3 elements\./,
     );
+  });
+
+  it('explains the empty match of a range that ends before 2008', async () => {
+    const { out, text } = await search({ inscribed_from: 2001, inscribed_to: 2005 });
+    expect(out.totalCount).toBe(0);
+    const notice =
+      'No element matched all 2 filters. Removing inscribed_to alone would match 3 elements. The 1 element dated 2008 was incorporated into the Representative List that year; UNESCO had proclaimed it earlier, and the data does not carry the proclamation year.';
+    expect(out.notice).toBe(notice);
+    expect(text).toContain(notice);
   });
 
   it.each([
@@ -788,8 +797,9 @@ describe('unesco_search_intangible_heritage — notices', () => {
     ['an open upper bound reaching past 2008', { inscribed_from: 2005 }, true],
     ['an open lower bound reaching 2008', { inscribed_to: 2012 }, true],
     ['exactly 2008', { inscribed_from: 2008, inscribed_to: 2008 }, true],
+    ['ending before 2008', { inscribed_to: 2007 }, true],
+    ['a range wholly before 2008', { inscribed_from: 2001, inscribed_to: 2005 }, true],
     ['starting after 2008', { inscribed_from: 2009 }, false],
-    ['ending before 2008', { inscribed_to: 2007 }, false],
     ['a range wholly after 2008', { inscribed_from: 2009, inscribed_to: 2020 }, false],
     ['no year bound at all', {}, false],
   ])('the 2008 notice for %s: present=%s', async (_label, input, present) => {

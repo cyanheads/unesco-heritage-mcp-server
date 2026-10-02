@@ -400,8 +400,7 @@ export const searchIntangibleHeritageTool = tool('unesco_search_intangible_herit
     }
     if (
       (from !== undefined || to !== undefined) &&
-      (from ?? INCORPORATION_YEAR) <= INCORPORATION_YEAR &&
-      (to ?? INCORPORATION_YEAR) >= INCORPORATION_YEAR
+      (from ?? INCORPORATION_YEAR) <= INCORPORATION_YEAR
     ) {
       const dated = records.filter((e) => e.inscribed_year === INCORPORATION_YEAR).length;
       const one = dated === 1;
