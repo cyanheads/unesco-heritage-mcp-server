@@ -2,10 +2,10 @@
 
 **Server:** unesco-heritage-mcp-server
 **Version:** 0.2.0
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.10`
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.15`
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
-**MCP SDK:** `@modelcontextprotocol/server` ^2.1.0
-**Zod:** ^4.6.5
+**MCP SDK:** `@modelcontextprotocol/server` ^2.3.1
+**Zod:** ^4.6.7
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
 
@@ -26,7 +26,7 @@ Nine read-only tools and four resources over four UNESCO Data Hub datasets (`dat
 
 `unesco_list_reference` decodes the vocabulary (criteria, countries with per-dataset counts, regions, intangible lists, MAB networks) and reports dataset coverage. Each resource (`unesco://site/{id_no}`, `unesco://intangible-heritage/{ich_ref}`, `unesco://biosphere-reserve/{mab_id}`, `unesco://geopark/{ugg_id}`) mirrors a get tool. There are no prompts.
 
-`UnescoDataHubService` loads each dataset lazily as an in-memory snapshot (one metadata GET plus one `exports/json` GET), refreshes it after 24 h with stale-while-revalidate, and keeps the previous snapshot when a refresh fails. Every tool call is answered from the snapshot: filtering, keyword tiers, facets, and distance search are local. There are no server-specific environment variables: the TTL, deadlines, and pacer limits are constants.
+`UnescoDataHubService` loads each dataset lazily as an in-memory snapshot (one metadata GET, whose field list bounds the select, plus one `exports/json` GET), refreshes it after 24 h with stale-while-revalidate, and keeps the previous snapshot when a refresh fails. A first load that fails reports `snapshot_unavailable`: retryable for an unreachable or failing Data Hub, not retryable when it rejects the request or serves data the loader refuses. Every tool call is answered from the snapshot: filtering, keyword tiers, facets, and distance search are local. There are no server-specific environment variables: the TTL, deadlines, and pacer limits are constants.
 
 Conventions every definition follows:
 
@@ -113,8 +113,7 @@ export const getIntangibleHeritageElementTool = tool('unesco_get_intangible_heri
     {
       reason: 'snapshot_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'No intangible heritage snapshot has loaded yet and the Data Hub is unreachable',
-      retryable: true,
+      when: 'No intangible heritage snapshot has loaded yet: the Data Hub is unreachable, failing, … (retryable), or it rejected the request … (not retryable)',
       thrownBy: 'service',
       recovery: 'The UNESCO Data Hub could not be reached to load the Intangible Heritage List; wait until …',
     },
@@ -144,7 +143,7 @@ export const getIntangibleHeritageElementTool = tool('unesco_get_intangible_heri
 });
 ```
 
-The search tools add the page enrichment (`pageEnrichment`: `totalCount`, `truncated`, `shown`, `cap`, `notice`) plus `applied_filters` and `facets`, compose the zero-hit and continuation notice with `composePageNotice`, and page with `makeCursor` / `readCursor`, whose fingerprint ties a cursor to its filters, sort, and snapshot date. `docs/design.md` § Shared enrichment gives the write order.
+The search tools add the page enrichment (`pageEnrichment`: `totalCount`, `truncated`, `shown`, `cap`, `notice`) plus `applied_filters` and `facets`, clamp `limit` to the page cap with `clampBudget(LIMIT_BUDGET, …)`, compose the clamp, zero-hit, and continuation notice with `composePageNotice`, and page with `makeCursor` / `readCursor`, whose fingerprint ties a cursor to its filters, sort, and snapshot date. `docs/design.md` § Shared enrichment gives the write order.
 
 ### Resource
 
@@ -451,7 +450,7 @@ security: false                            # optional — true ONLY for a source
 
 ## Publishing
 
-**Every release goes through a release PR, straight-through** — `git-wrapup`'s "Release PR mode", mode `straight-through`. One run: `git-wrapup` lands the commit stack on `release/<version>`, pushes it, and opens the PR (title = the release commit subject, body = the changelog entry plus a gates section); `release-and-publish` then fast-forwards `main` locally with `git merge --ff-only`, creates the tag on `main`'s tip, pushes `main` and the tag, deletes the branch, and publishes. A caller's brief may run a given release as `gated` instead — a `release-pr-review` pass on the open PR before `release-and-publish`. **Never merge through the GitHub UI or `gh pr merge`**: squash and rebase-merge are disabled in the repo settings because both rewrite the stack (rebase-merge also strips the SSH signatures), and a merge commit breaks the linear history.
+**Every release goes through a release PR, straight-through** — `git-wrapup`'s "Release PR mode", mode `straight-through`. One run: `git-wrapup` lands the commit stack on `release/<version>`, pushes it, and opens the PR (title = the release commit subject, body = the release digest: theme line, `## Changes`, `## Gates`, changelog link last); `release-and-publish` then fast-forwards `main` locally with `git merge --ff-only`, creates the tag on `main`'s tip, pushes `main` and the tag, deletes the branch, and publishes. A caller's brief may run a given release as `gated` instead — a `release-pr-review` pass on the open PR before `release-and-publish`. **Never merge through the GitHub UI or `gh pr merge`**: squash and rebase-merge are disabled in the repo settings because both rewrite the stack (rebase-merge also strips the SSH signatures), and a merge commit breaks the linear history.
 
 ---
 
@@ -479,7 +478,7 @@ import { getMyService } from '@/services/my-domain/my-service.js';
 - [ ] Every data tool declares `sources` and writes it first; resources embed `sources` in the payload
 - [ ] Upstream text reaches `format()` only through `inline` / `cell` / `quote` / `quoted` (`src/mcp-server/shared/markdown.ts`)
 - [ ] Inputs built from `src/mcp-server/shared/inputs.ts`; every optional scalar is blank-as-unset
-- [ ] New export fields: added to the strict row schema in `rows.ts` and the export `select` list, reviewed against real upstream sparsity/nullability, never fabricated when missing
+- [ ] New export fields: added to the strict row schema in `rows.ts` and the export `select` list, reviewed against real upstream sparsity/nullability, never fabricated when missing; a field the dataset can load without goes in `OPTIONAL_FIELDS` too
 - [ ] Tests run on synthetic fixtures in `tests/fixtures/`, including at least one sparse row with omitted upstream fields
 - [ ] Registered in the `createApp()` arrays in `src/index.ts` and the `TOOLS` / `RESOURCES` lists in `tests/fuzz/definitions.fuzz.test.ts`; `SERVER_INSTRUCTIONS` (`src/mcp-server/instructions.ts`) updated when a tool name or workflow changes
 - [ ] `docs/design.md` updated when the surface or a design decision changes

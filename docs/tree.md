@@ -1,6 +1,6 @@
 # unesco-heritage-mcp-server - Directory Structure
 
-Generated on: 2026-10-02 14:09:04
+Generated on: 2026-10-17 22:11:38
 
 ```text
 unesco-heritage-mcp-server/
@@ -131,6 +131,7 @@ unesco-heritage-mcp-server/
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
+│   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
 ├── src/
