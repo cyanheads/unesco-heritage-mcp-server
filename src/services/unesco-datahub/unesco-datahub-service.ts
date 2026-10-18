@@ -1,9 +1,11 @@
 /**
  * @fileoverview Snapshot lifecycle for the four UNESCO Data Hub datasets
  * (`whc001`, `ich001`, `mab001`, `eg0001`): lazy load on first use, single-flight,
- * 24 h TTL with stale-while-revalidate, failure backoff, and the resilient load
+ * 24 h TTL with stale-while-revalidate, failure backoff, the resilient load
  * pipeline (pacer inside `withRetry` under a total deadline, byte-budgeted body
- * reads, strict row validation, row-count and license checks, index build).
+ * reads, a select bounded by the metadata's field list, strict row validation,
+ * row-count and license checks, index build), and the split of first-load
+ * failures into retryable outages and non-retryable rejections.
  * @module services/unesco-datahub/unesco-datahub-service
  */
 
@@ -28,10 +30,12 @@ import {
   IchRowSchema,
   MAB_FIELDS,
   MabRowSchema,
+  OPTIONAL_FIELDS,
   toBiosphereReserve,
   toGeopark,
   toHeritageSite,
   toIntangibleElement,
+  unlistedMask,
   WHC_FIELDS,
   WhcRowSchema,
 } from './rows.js';
@@ -66,6 +70,9 @@ const EXPORT_FIELDS: Readonly<Record<DatasetId, readonly string[]>> = {
   eg0001: EG_FIELDS,
 };
 
+/** HTTP 4xx statuses a later attempt can clear: Request Timeout, Too Early, Too Many Requests. */
+const RETRYABLE_4XX: ReadonlySet<number> = new Set([408, 425, 429]);
+
 const MiB = 1_048_576;
 /** Decoded-body budgets: a body past its budget fails the load as unreadable. */
 const METADATA_MAX_BYTES = MiB;
@@ -86,9 +93,11 @@ export interface UnescoDataHubServiceOptions {
   ttlMs?: number;
 }
 
-/** Dataset metadata the snapshot keeps. */
+/** Dataset metadata a load reads: the snapshot keeps all but `fields`. */
 interface DatasetMeta {
   asOf: string;
+  /** The field names the metadata lists, which decide the select and the row schema. */
+  fields: ReadonlySet<string>;
   license: string;
   recordsCount: number;
 }
@@ -254,13 +263,35 @@ export class UnescoDataHubService {
   }
 
   /**
-   * The first-load failure every tool declares as `snapshot_unavailable`.
+   * The first-load failure every definition declares as `snapshot_unavailable`.
    * `retryable` rides in `data` because the framework copies a contract's
    * `retryable` onto the wire only for `ctx.fail`, never for a service throw.
-   * `retryAfter` is the later of this dataset's backoff and the pacer's shared
-   * cooldown gate, which a rate limit on any dataset can close.
+   *
+   * A cause a retry cannot fix (`rejectionDetail`) reports `retryable: false`
+   * with no `retryAfter`, a message built only from server-side facts, and its
+   * own `recovery.hint`, which replaces each definition's declared recovery.
+   * Any other cause is transient and carries `retryAfter`: the later of this
+   * dataset's backoff and the pacer's shared cooldown gate, which a rate limit
+   * on any dataset can close. Both share the backoff, so a call after it
+   * re-attempts the load either way.
    */
   private unavailable(id: DatasetId, slot: Slot<unknown>, cause: unknown) {
+    const rejection = rejectionDetail(cause);
+    if (rejection !== undefined) {
+      const title = DATASET_TITLES[id];
+      return serviceUnavailable(
+        `The ${title} (${id}) could not be loaded from the UNESCO Data Hub: ${rejection}.`,
+        {
+          reason: 'snapshot_unavailable',
+          retryable: false,
+          dataset: id,
+          recovery: {
+            hint: `The UNESCO Data Hub rejected this server's request for the ${title} or served data this server cannot use; calling again fails the same way until the Data Hub changes, so tell the user this dataset is unavailable from this server for now and answer from the other UNESCO datasets where they cover the question.`,
+          },
+        },
+        { cause },
+      );
+    }
     const waitMs = Math.max(slot.nextAttemptAt - this.now(), this.pacer.cooldown.remainingMs);
     const retryAfter = Math.max(1, Math.ceil(waitMs / 1000));
     return serviceUnavailable(
@@ -292,7 +323,18 @@ export class UnescoDataHubService {
             { dataset: id, license, licenseChanged: true, retryable: false },
           );
         }
-        const exportUrl = `${BASE_URL}/${id}/exports/json?select=${encodeURIComponent(EXPORT_FIELDS[id].join(','))}`;
+        const fields = new Set(meta.fields.map((field) => field.name));
+        const unlisted = EXPORT_FIELDS[id].filter((field) => !fields.has(field));
+        const optional: readonly string[] = OPTIONAL_FIELDS[id];
+        const missing = unlisted.filter((field) => !optional.includes(field));
+        if (missing.length > 0) {
+          throw serviceUnavailable(
+            `Dataset ${id} metadata no longer lists ${missing.join(', ')}, which this server requires; the export was not requested.`,
+            { dataset: id, missingFields: missing, retryable: false },
+          );
+        }
+        const select = EXPORT_FIELDS[id].filter((field) => fields.has(field));
+        const exportUrl = `${BASE_URL}/${id}/exports/json?select=${encodeURIComponent(select.join(','))}`;
         const rows = await this.fetchJson(
           exportUrl,
           { dataset: id, document: 'export', maxBytes: EXPORT_MAX_BYTES[id] },
@@ -308,7 +350,18 @@ export class UnescoDataHubService {
             { dataset: id, exported: rows.length, expected: records_count },
           );
         }
-        return build(rows, { asOf: data_processed, license, recordsCount: records_count }, logCtx);
+        const snapshot = build(
+          rows,
+          { asOf: data_processed, fields, license, recordsCount: records_count },
+          logCtx,
+        );
+        if (unlisted.length > 0) {
+          logger.warning(
+            `Loaded ${id} without ${unlisted.join(', ')}: its metadata no longer lists ${unlisted.length === 1 ? 'that field' : 'those fields'}.`,
+            withExtra(logCtx, { omittedFields: unlisted }),
+          );
+        }
+        return snapshot;
       },
       {
         maxRetries: 2,
@@ -332,7 +385,7 @@ export class UnescoDataHubService {
         const response = await this.get(
           url,
           Math.min(REQUEST_TIMEOUT_MS, attempt.remainingMs),
-          logCtx,
+          withExtra(logCtx, { endpoint: body.document }),
           {
             signal,
             headers: { accept: 'application/json' },
@@ -353,12 +406,13 @@ export class UnescoDataHubService {
     meta: DatasetMeta,
     logCtx: RequestContext,
   ): HeritageSnapshot {
+    const schema = WhcRowSchema.omit(unlistedMask(OPTIONAL_FIELDS.whc001, meta.fields));
     const records: HeritageSite[] = [];
     let unparsed = 0;
     const countMismatches: string[] = [];
     rows.forEach((raw, index) => {
       const { site, componentParts } = mapRow('whc001', index, () =>
-        toHeritageSite(parseRow('whc001', WhcRowSchema, raw, index)),
+        toHeritageSite(parseRow('whc001', schema, raw, index)),
       );
       unparsed += site.components_unparsed;
       if (componentParts !== site.components_total) countMismatches.push(site.id_no);
@@ -385,10 +439,9 @@ export class UnescoDataHubService {
   }
 
   private buildIntangible(rows: unknown[], meta: DatasetMeta): IntangibleSnapshot {
+    const schema = IchRowSchema.omit(unlistedMask(OPTIONAL_FIELDS.ich001, meta.fields));
     const records = rows.map((raw, index) =>
-      mapRow('ich001', index, () =>
-        toIntangibleElement(parseRow('ich001', IchRowSchema, raw, index)),
-      ),
+      mapRow('ich001', index, () => toIntangibleElement(parseRow('ich001', schema, raw, index))),
     );
     return this.index('ich001', records, meta, {
       id: (e) => e.ich_ref,
@@ -402,10 +455,9 @@ export class UnescoDataHubService {
   }
 
   private buildBiosphere(rows: unknown[], meta: DatasetMeta): BiosphereSnapshot {
+    const schema = MabRowSchema.omit(unlistedMask(OPTIONAL_FIELDS.mab001, meta.fields));
     const records = rows.map((raw, index) =>
-      mapRow('mab001', index, () =>
-        toBiosphereReserve(parseRow('mab001', MabRowSchema, raw, index)),
-      ),
+      mapRow('mab001', index, () => toBiosphereReserve(parseRow('mab001', schema, raw, index))),
     );
     return this.index('mab001', records, meta, {
       id: (r) => foldText(r.mab_id),
@@ -419,8 +471,9 @@ export class UnescoDataHubService {
   }
 
   private buildGeoparks(rows: unknown[], meta: DatasetMeta): GeoparkSnapshot {
+    const schema = EgRowSchema.omit(unlistedMask(OPTIONAL_FIELDS.eg0001, meta.fields));
     const records = rows.map((raw, index) =>
-      mapRow('eg0001', index, () => toGeopark(parseRow('eg0001', EgRowSchema, raw, index))),
+      mapRow('eg0001', index, () => toGeopark(parseRow('eg0001', schema, raw, index))),
     );
     return this.index('eg0001', records, meta, {
       id: (g) => g.ugg_id,
@@ -536,6 +589,32 @@ function mapRow<T>(dataset: DatasetId, index: number, map: () => T): T {
 function isLicenseChange(error: unknown): boolean {
   const data = (error as { data?: { licenseChanged?: unknown } } | undefined)?.data;
   return data?.licenseChanged === true;
+}
+
+/**
+ * What failed, for a load failure a retry cannot fix: the Data Hub answered a
+ * 4xx other than 408, 425, or 429, or the cause carries `data.retryable: false`
+ * (a 501, or one of the loader's own refusals: a missing required field, the
+ * license, a body budget, a row schema, a row mapper, a duplicate id). Built
+ * only from the HTTP status, this server's field names, or fixed text, so no
+ * upstream text reaches the caller. `undefined` for a transient cause.
+ */
+function rejectionDetail(cause: unknown): string | undefined {
+  const data = (
+    cause as
+      | { data?: { missingFields?: unknown; retryable?: unknown; status?: unknown } }
+      | undefined
+  )?.data;
+  const status = typeof data?.status === 'number' ? data.status : undefined;
+  const rejected =
+    status !== undefined && status >= 400 && status < 500 && !RETRYABLE_4XX.has(status);
+  if (!rejected && data?.retryable !== false) return;
+  const missing = Array.isArray(data?.missingFields) ? (data.missingFields as string[]) : [];
+  if (missing.length > 0) {
+    return `the dataset no longer has the field${missing.length > 1 ? 's' : ''} ${missing.join(', ')} this server requires`;
+  }
+  if (status !== undefined) return `the Data Hub answered HTTP ${status}`;
+  return "the data failed one of this server's checks (license, size, or row format)";
 }
 
 /** Awaits a never-rejecting load, abandoning the wait (not the load) when `signal` aborts. */

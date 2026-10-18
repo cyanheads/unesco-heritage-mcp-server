@@ -19,11 +19,13 @@ import {
 import {
   blankAsUnset,
   booleanInput,
+  clampBudget,
   countryInput,
   cursorInput,
   foldToEnum,
   includeDescriptionInput,
   isBlank,
+  LIMIT_BUDGET,
   limitInput,
   MAX_QUERY_WORDS,
   nearInput,
@@ -41,6 +43,7 @@ import {
   compareText,
   countBoolean,
   countInto,
+  displayDistanceKm,
   fingerprint,
   haversineKm,
   makeCursor,
@@ -125,7 +128,7 @@ const SiteRow = z
       .number()
       .optional()
       .describe(
-        "Distance in km from the near point to the nearest of the site's representative point and its components (present when near is set).",
+        "Distance in km from the near point to the nearest of the site's representative point and its components, rounded to 0.1 km and never above radius_km (present when near is set).",
       ),
     nearest_component: z
       .object({
@@ -136,7 +139,7 @@ const SiteRow = z
       })
       .optional()
       .describe(
-        'The component distance_km is measured to; present when near is set and a component is nearer than the representative point at distance_km precision (0.1 km; a tie keeps the representative point), or the site has no representative point.',
+        'The component distance_km is measured to; present when near is set and a component is strictly nearer than the representative point before rounding (an exact tie keeps the representative point), or the site has no representative point.',
       ),
     matched_in: z
       .enum(MATCH_TIERS)
@@ -216,7 +219,9 @@ const AppliedFiltersSchema = z
       .optional()
       .describe('Distance filter.'),
     sort: z.enum(SORTS).describe('The sort applied (resolved default when none was given).'),
-    limit: z.number().describe('Page size.'),
+    limit: z
+      .number()
+      .describe(`Page size applied: limit, or ${LIMIT_BUDGET.cap} when limit was larger.`),
     include_description: z.boolean().describe('Whether rows carry their description.'),
   })
   .describe('The filters and sort as the server applied them.');
@@ -265,7 +270,7 @@ export const searchSitesTool = tool('unesco_search_sites', {
     inscribed_from: yearInput('Earliest inscription year, inclusive.'),
     inscribed_to: yearInput('Latest inscription year, inclusive.'),
     near: nearInput(
-      'Only sites within radius_km of this point: a site matches when its representative point or any of its components lies within the radius, and a site with neither never matches. distance_km and the distance sort use the nearest of those points.',
+      'Only sites within radius_km of this point: a site matches when its representative point or any of its components lies within the radius, and a site with neither never matches. The match and the distance sort use the exact distance to the nearest of those points, which distance_km shows rounded to 0.1 km and never above radius_km.',
     ),
     sort: blankAsUnset(z.enum(SORTS).optional()).describe(
       'Result order. Default: relevance when query is set, else distance when near is set, else name. relevance needs query; distance needs near. Absent areas and Danger years sort last.',
@@ -337,7 +342,7 @@ export const searchSitesTool = tool('unesco_search_sites', {
     {
       reason: 'invalid_cursor',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'cursor is malformed, or its offset or limit is not a non-negative whole number',
+      when: 'cursor is malformed, or its offset is not a non-negative whole number or its limit not a positive one',
       severity: 'notice',
       thrownBy: 'service',
       recovery:
@@ -346,8 +351,7 @@ export const searchSitesTool = tool('unesco_search_sites', {
     {
       reason: 'snapshot_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'No World Heritage snapshot has loaded yet and the Data Hub is unreachable, erroring, or rate-limiting',
-      retryable: true,
+      when: 'No World Heritage snapshot has loaded yet: the Data Hub is unreachable, failing, or rate-limiting (retryable), or it rejected the request or served data this server cannot use (not retryable)',
       thrownBy: 'service',
       recovery:
         'The UNESCO Data Hub could not be reached to load the World Heritage List; wait until the next load attempt this error names (retryAfter, in seconds), then call unesco_search_sites again.',
@@ -391,6 +395,7 @@ export const searchSitesTool = tool('unesco_search_sites', {
     const criteria = input.criteria
       ? CRITERIA_CODES.filter((c) => input.criteria?.includes(c))
       : undefined;
+    const limit = clampBudget(LIMIT_BUDGET, input.limit);
     const applied: AppliedFilters = {
       ...(input.query ? { query: input.query } : {}),
       ...(country ? { country } : {}),
@@ -403,7 +408,7 @@ export const searchSitesTool = tool('unesco_search_sites', {
       ...(input.inscribed_to !== undefined ? { inscribed_to: input.inscribed_to } : {}),
       ...(input.near ? { near: input.near } : {}),
       sort,
-      limit: input.limit,
+      limit: limit.applied,
       include_description: input.include_description,
     };
     const { limit: _limit, include_description: _includeDescription, ...fingerprinted } = applied;
@@ -470,12 +475,17 @@ export const searchSitesTool = tool('unesco_search_sites', {
     ctx.enrich({ facets: siteFacets(matched.map((i) => records[i] as HeritageSite)) });
 
     matched.sort(siteComparator(sort, records, tierOf, distanceOf));
-    const page = matched
-      .slice(offset, offset + input.limit)
-      .map((i) =>
-        toRow(records[i] as HeritageSite, tierOf[i], nearest[i], input.include_description),
+    const page = matched.slice(offset, offset + limit.applied).map((i) => {
+      const point = nearest[i];
+      return toRow(
+        records[i] as HeritageSite,
+        tierOf[i],
+        near && point ? displayDistanceKm(point.km, near.radius_km) : undefined,
+        point?.component,
+        input.include_description,
       );
-    ctx.enrich({ truncated: false, shown: page.length, cap: input.limit });
+    });
+    ctx.enrich({ truncated: false, shown: page.length, cap: limit.applied });
 
     const fragments: string[] = [];
     if (total === 0) {
@@ -521,13 +531,19 @@ export const searchSitesTool = tool('unesco_search_sites', {
       );
     }
 
-    const { more, notice } = composePageNotice({ fragments, offset, shown: page.length, total });
+    const { more, notice } = composePageNotice({
+      fragments,
+      limit,
+      offset,
+      shown: page.length,
+      total,
+    });
     let next_cursor: string | undefined;
     if (more) {
-      ctx.enrich.truncated({ shown: page.length, cap: input.limit, guidance: notice });
+      ctx.enrich.truncated({ shown: page.length, cap: limit.applied, guidance: notice });
       next_cursor = makeCursor({
         offset: offset + page.length,
-        limit: input.limit,
+        limit: limit.applied,
         fp,
         asOf: heritage.asOf,
       });
@@ -587,17 +603,17 @@ export const searchSitesTool = tool('unesco_search_sites', {
   },
 });
 
-/** A site's distance from the `near` point, and the component it was measured to, if any. */
+/** A site's unrounded `near` distance, and the component it was measured to, if any. */
 interface NearestPoint {
   component?: SiteComponent;
   km: number;
 }
 
 /**
- * The nearest of a site's points to (lat, lon), on the rounded distance: its
- * representative point unless a component is strictly nearer, in which case the
- * nearest component (the earlier in UNESCO order on a tie). Undefined when the
- * site has neither.
+ * The nearest of a site's points to (lat, lon), on the unrounded distance: its
+ * representative point unless a component is strictly nearer (an exact tie
+ * keeps the point), in which case the nearest component (the earlier in UNESCO
+ * order on an exact tie). Undefined when the site has neither.
  */
 function nearestPoint(site: HeritageSite, lat: number, lon: number): NearestPoint | undefined {
   let nearest: NearestPoint | undefined =
@@ -624,7 +640,8 @@ function componentNote(component: SiteRowT['nearest_component']): string {
 function toRow(
   site: HeritageSite,
   tier: number | undefined,
-  nearest: NearestPoint | undefined,
+  distanceKm: number | undefined,
+  component: SiteComponent | undefined,
   includeDescription: boolean,
 ): SiteRowT {
   return {
@@ -645,8 +662,8 @@ function toRow(
     ...(site.area_hectares !== undefined ? { area_hectares: site.area_hectares } : {}),
     ...(site.latitude !== undefined ? { latitude: site.latitude } : {}),
     ...(site.longitude !== undefined ? { longitude: site.longitude } : {}),
-    ...(nearest ? { distance_km: nearest.km } : {}),
-    ...(nearest?.component ? { nearest_component: nearest.component } : {}),
+    ...(distanceKm !== undefined ? { distance_km: distanceKm } : {}),
+    ...(component ? { nearest_component: component } : {}),
     ...(tier !== undefined ? { matched_in: MATCH_TIERS[tier] } : {}),
     ...(includeDescription && site.description ? { description: site.description } : {}),
   };

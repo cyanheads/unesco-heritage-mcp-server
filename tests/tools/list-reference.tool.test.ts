@@ -8,12 +8,20 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listReferenceTool } from '@/mcp-server/tools/definitions/list-reference.tool.js';
 import { CRITERIA, DATASET_IDS } from '@/services/unesco-datahub/vocabulary.js';
-import { DATA_AS_OF, type HubOptions, httpFailure } from '../fixtures/hub.js';
+import { declaredRecovery } from '../fixtures/contract.js';
+import {
+  contentFailureCases,
+  expectContentFailure,
+  settle,
+  transportFailureCases,
+  withFakeTimers,
+} from '../fixtures/failures.js';
+import { DATA_AS_OF, type HubOptions, httpFailure, transientFailure } from '../fixtures/hub.js';
 import { EG_ROWS, egRow, ICH_ROWS, ichRow, WHC_ROWS, whcRow } from '../fixtures/rows.js';
 import {
   allText,
@@ -37,11 +45,11 @@ const list = async (input: Record<string, unknown>) => {
 };
 
 const NO_ICH: HubOptions = {
-  intercept: (call) => (call.dataset === 'ich001' ? httpFailure(404) : undefined),
+  intercept: (call) => (call.dataset === 'ich001' ? transientFailure() : undefined),
 };
 
 const NO_EG: HubOptions = {
-  intercept: (call) => (call.dataset === 'eg0001' ? httpFailure(404) : undefined),
+  intercept: (call) => (call.dataset === 'eg0001' ? transientFailure() : undefined),
 };
 
 describe('unesco_list_reference — criteria', () => {
@@ -697,38 +705,39 @@ describe('unesco_list_reference — upstream failure classes', () => {
     vi.useRealTimers();
   });
 
-  const cases: [string, NonNullable<HubOptions['intercept']>][] = [
-    ['a 404', () => httpFailure(404)],
-    ['a 429 with a long Retry-After', () => httpFailure(429, { 'retry-after': '3600' })],
-    ['a 503', () => httpFailure(503)],
-    [
-      'an HTML body with a 200',
-      (call) =>
-        call.kind === 'export' ? new Response('<html>oops</html>', { status: 200 }) : undefined,
-    ],
-    [
-      'a metadata document of the wrong shape',
-      (call) => (call.kind === 'meta' ? Response.json({ nope: true }) : undefined),
-    ],
-    [
-      'a timeout',
-      () => {
-        throw new McpError(JsonRpcErrorCode.Timeout, 'The request timed out.');
-      },
-    ],
-  ];
+  it.each(transportFailureCases('whc001', WHC_ROWS.length))(
+    'reports %s as retryable snapshot_unavailable with the declared recovery',
+    async (_label, intercept) => {
+      withFakeTimers();
+      useHub({ intercept });
+      const error = errorOf(
+        await settle(runToolContract(listReferenceTool, { topic: 'criteria' })),
+      );
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expect(error.data).toMatchObject({
+        reason: 'snapshot_unavailable',
+        retryable: true,
+        dataset: 'whc001',
+        recovery: { hint: declaredRecovery(listReferenceTool.errors, 'snapshot_unavailable') },
+      });
+    },
+  );
 
-  it.each(cases)('reports %s as snapshot_unavailable', async (_label, intercept) => {
-    vi.useFakeTimers({
-      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
-    });
-    useHub({ intercept });
-    const pending = runToolContract(listReferenceTool, { topic: 'criteria' });
-    await vi.advanceTimersByTimeAsync(10_000);
-    const error = errorOf(await pending);
-    expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
-    expect(error.data).toMatchObject({ reason: 'snapshot_unavailable', dataset: 'whc001' });
-  });
+  it.each(contentFailureCases('whc001'))(
+    'reports %s as non-retryable snapshot_unavailable with the service recovery',
+    async (_label, hub) => {
+      useHub(hub);
+      const result = await runToolContract(listReferenceTool, { topic: 'criteria' });
+      const error = errorOf(result);
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expectContentFailure(
+        error,
+        'whc001',
+        declaredRecovery(listReferenceTool.errors, 'snapshot_unavailable'),
+      );
+      expect(allText(result)).toContain(`Recovery: ${error.data?.recovery?.hint}`);
+    },
+  );
 
   it('reports a license change as snapshot_unavailable', async () => {
     useHub({ metas: { ich001: { license: 'All rights reserved' } } });

@@ -1,7 +1,7 @@
 /**
  * @fileoverview unesco://site/{id_no} — one World Heritage site record: the
- * unesco_get_site payload with the default component cap, plus the `sources`
- * attribution block.
+ * unesco_get_site payload with the default component cap and the English
+ * description, plus the `sources` attribution block.
  * @module mcp-server/resources/definitions/site.resource
  */
 
@@ -21,7 +21,7 @@ export const siteResource = resource('unesco://site/{id_no}', {
   name: 'unesco_site',
   title: 'World Heritage site record',
   description:
-    "One World Heritage site's full record by id_no, as unesco_get_site returns it with up to 20 components (components_total gives the full count), plus a sources array carrying the dataset date, license, and UNESCO attribution.",
+    "One World Heritage site's full record by id_no, as unesco_get_site returns it with up to 20 components (components_total gives the full count) and the English description, plus a sources array carrying the dataset date, license, and UNESCO attribution. For the description in French, Spanish, Russian, Arabic, or Chinese, call unesco_get_site with description_language.",
   mimeType: 'application/json',
   cacheHint: { ttlMs: 3_600_000, cacheScope: 'public' },
   params: z.object({
@@ -38,8 +38,7 @@ export const siteResource = resource('unesco://site/{id_no}', {
     {
       reason: 'snapshot_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'No World Heritage snapshot has loaded yet and the Data Hub is unreachable',
-      retryable: true,
+      when: 'No World Heritage snapshot has loaded yet: the Data Hub is unreachable, failing, or rate-limiting (retryable), or it rejected the request or served data this server cannot use (not retryable)',
       thrownBy: 'service',
       recovery:
         'The UNESCO Data Hub could not be reached to load the World Heritage List; wait until the next load attempt this error names (retryAfter, in seconds), then read the resource again.',

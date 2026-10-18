@@ -38,8 +38,7 @@ export const geoparkResource = resource('unesco://geopark/{ugg_id}', {
     {
       reason: 'snapshot_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'No geopark snapshot has loaded yet and the Data Hub is unreachable',
-      retryable: true,
+      when: 'No geopark snapshot has loaded yet: the Data Hub is unreachable, failing, or rate-limiting (retryable), or it rejected the request or served data this server cannot use (not retryable)',
       thrownBy: 'service',
       recovery:
         'The UNESCO Data Hub could not be reached to load the UNESCO Global Geoparks; wait until the next load attempt this error names (retryAfter, in seconds), then read the resource again.',

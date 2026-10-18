@@ -16,6 +16,7 @@ import {
   compareText,
   countBoolean,
   countInto,
+  displayDistanceKm,
   fingerprint,
   foldText,
   foldTier,
@@ -126,14 +127,25 @@ describe('matchesAllWords', () => {
 });
 
 describe('haversineKm', () => {
-  it('is 0 for identical points and rounds to 0.1 km', () => {
+  /** One degree of arc on the 6,371 km sphere. */
+  const DEGREE_KM = (6371 * Math.PI) / 180;
+
+  it('is 0 for identical points and returns unrounded kilometres', () => {
     expect(haversineKm(10, 20, 10, 20)).toBe(0);
-    expect(haversineKm(0, 0, 0, 1)).toBe(111.2);
+    expect(haversineKm(0, 0, 0, 1)).toBeCloseTo(DEGREE_KM, 9);
+  });
+
+  it('keeps apart two distances that round to the same 0.1 km', () => {
+    const point = haversineKm(60, 5, 60.1, 5);
+    const component = haversineKm(60, 5, 60.0997, 5);
+    expect(point).toBeCloseTo(11.11949, 5);
+    expect(component).toBeCloseTo(11.08613, 5);
+    expect(component).toBeLessThan(point);
   });
 
   it('measures a known great-circle distance on the 6,371 km sphere', () => {
-    expect(haversineKm(0, 0, 0, 180)).toBe(20015.1);
-    expect(haversineKm(90, 0, -90, 0)).toBe(20015.1);
+    expect(haversineKm(0, 0, 0, 180)).toBeCloseTo(6371 * Math.PI, 6);
+    expect(haversineKm(90, 0, -90, 0)).toBeCloseTo(6371 * Math.PI, 6);
   });
 
   it('is symmetric', () => {
@@ -141,7 +153,21 @@ describe('haversineKm', () => {
   });
 
   it('wraps across the antimeridian', () => {
-    expect(haversineKm(0, 179.5, 0, -179.5)).toBe(111.2);
+    expect(haversineKm(0, 179.5, 0, -179.5)).toBeCloseTo(DEGREE_KM, 9);
+  });
+});
+
+describe('displayDistanceKm', () => {
+  it.each([
+    ['rounds to 0.1 km inside a wide radius', 11.0861, 30, 11.1],
+    ['rounds down', 231.7449, 300, 231.7],
+    ['clamps a value that rounds up past the radius', 11.0861, 11.09, 11.09],
+    ['clamps at a radius on the 0.1 km grid', 11.05, 11.05, 11.05],
+    ['shows exactly the radius when the distance equals it', 2.2, 2.2, 2.2],
+    ['rounds a sub-50 m distance to 0', 0.04, 0.05, 0],
+    ['keeps 0 for an identical point', 0, 0.001, 0],
+  ])('%s', (_label, km, radiusKm, shown) => {
+    expect(displayDistanceKm(km, radiusKm)).toBe(shown);
   });
 });
 
@@ -276,29 +302,33 @@ describe('cursor round trip', () => {
     expect(readCursor(cursor, context)).toEqual({ offset: 5, fp: '', asOf: '' });
   });
 
+  /**
+   * The decoder rejects the first five; `readCursor` itself rejects the rest.
+   * Every one leaves `recovery` unset, so the calling tool's declared
+   * `invalid_cursor` recovery is what reaches the wire.
+   */
   it.each([
+    ['text that is not base64url JSON', 'not-a-cursor'],
+    ['truncated base64url', encodeCursor({ offset: 20, limit: 20 }).slice(0, 5)],
+    ['JSON with no offset', Buffer.from('{"foo":1}').toString('base64url')],
+    ['a negative offset', encodeCursor({ offset: -20, limit: 20 })],
+    ['a zero limit', encodeCursor({ offset: 0, limit: 0 })],
     ['a fractional offset', encodeCursor({ offset: 1.5, limit: 20, fp: 'abc', asOf: 'x' })],
     ['a fractional limit', encodeCursor({ offset: 20, limit: 2.5, fp: 'abc', asOf: 'x' })],
     ['an infinite offset', Buffer.from('{"offset":1e999,"limit":20}').toString('base64url')],
-    ['a negative offset', encodeCursor({ offset: -20, limit: 20 })],
-  ])('rejects a cursor carrying %s as invalid_cursor', (_label, cursor) => {
-    try {
-      readCursor(cursor, context);
-      expect.unreachable('expected an error');
-    } catch (error) {
-      expect(error).toBeInstanceOf(McpError);
-      expect((error as McpError).code).toBe(JsonRpcErrorCode.InvalidParams);
-      expect((error as McpError).data).toMatchObject({ reason: 'invalid_cursor' });
-    }
-  });
-
-  it('rejects a malformed cursor with the framework invalid_cursor error', () => {
-    try {
-      readCursor('not-a-cursor', context);
-      expect.unreachable('expected an error');
-    } catch (error) {
-      expect(error).toBeInstanceOf(McpError);
-      expect((error as McpError).data).toMatchObject({ reason: 'invalid_cursor' });
-    }
-  });
+  ])(
+    'rejects a cursor carrying %s as invalid_cursor with no recovery of its own',
+    (_label, cursor) => {
+      try {
+        readCursor(cursor, context);
+        expect.unreachable('expected an error');
+      } catch (error) {
+        expect(error).toBeInstanceOf(McpError);
+        const { code, data, message } = error as McpError;
+        expect(code).toBe(JsonRpcErrorCode.InvalidParams);
+        expect(data).toEqual({ reason: 'invalid_cursor' });
+        expect(`${message} ${JSON.stringify(data)}`).not.toContain('nextCursor');
+      }
+    },
+  );
 });

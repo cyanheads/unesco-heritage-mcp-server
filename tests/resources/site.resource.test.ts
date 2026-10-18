@@ -12,8 +12,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { siteResource } from '@/mcp-server/resources/definitions/site.resource.js';
 import { getSiteTool } from '@/mcp-server/tools/definitions/get-site.tool.js';
 import { declaredRecovery } from '../fixtures/contract.js';
-import { failureCases, settle, withFakeTimers } from '../fixtures/failures.js';
-import { httpFailure } from '../fixtures/hub.js';
+import {
+  contentFailureCases,
+  expectContentFailure,
+  rejectionFrom,
+  settleRejection,
+  transportFailureCases,
+  withFakeTimers,
+} from '../fixtures/failures.js';
+import { transientFailure } from '../fixtures/hub.js';
 import { readResource } from '../fixtures/resource.js';
 import { WHC_ROWS, whcRow } from '../fixtures/rows.js';
 import { disposeServiceAfterEach, structured, useHub } from '../fixtures/tool.js';
@@ -90,6 +97,19 @@ describe('unesco://site/{id_no} — record', () => {
     expect(record).not.toHaveProperty('criteria_inferred');
   });
 
+  it('returns the English description and none of the translations a site carries', async () => {
+    const record = await read('unesco://site/101');
+    expect(record).toMatchObject({ description: 'A synthetic walled town used as test data.' });
+    expect(record).not.toHaveProperty('description_language');
+    expect(record).not.toHaveProperty('description_translations');
+    expect(JSON.stringify(record)).not.toContain('fortifiée');
+  });
+
+  it('names the tool parameter that returns another language', () => {
+    expect(siteResource.description).toContain('English description');
+    expect(siteResource.description).toContain('unesco_get_site with description_language');
+  });
+
   it('lists at most 20 components and reports the full count', async () => {
     const record = await read('unesco://site/109');
     expect(record.components).toHaveLength(20);
@@ -162,7 +182,7 @@ describe('unesco://site/{id_no} — errors', () => {
   });
 
   it('snapshot_unavailable: ServiceUnavailable with dataset and retryAfter', async () => {
-    useHub({ intercept: () => httpFailure(404) });
+    useHub({ intercept: () => transientFailure() });
     await expect(read('unesco://site/101')).rejects.toMatchObject({
       code: JsonRpcErrorCode.ServiceUnavailable,
       data: { reason: 'snapshot_unavailable', dataset: 'whc001', retryAfter: 60 },
@@ -201,16 +221,29 @@ describe('unesco://site/{id_no} — upstream failure classes', () => {
     vi.useRealTimers();
   });
 
-  it.each(failureCases('whc001', WHC_ROWS.length))(
-    'reports %s as snapshot_unavailable',
+  it.each(transportFailureCases('whc001', WHC_ROWS.length))(
+    'reports %s as retryable snapshot_unavailable',
     async (_label, intercept) => {
       withFakeTimers();
       useHub({ intercept });
-      const pending = read('unesco://site/101').catch((e: unknown) => e);
-      expect(await settle(pending)).toMatchObject({
+      expect(await settleRejection(read('unesco://site/101'))).toMatchObject({
         code: JsonRpcErrorCode.ServiceUnavailable,
-        data: { reason: 'snapshot_unavailable', dataset: 'whc001' },
+        data: { reason: 'snapshot_unavailable', retryable: true, dataset: 'whc001' },
       });
+    },
+  );
+
+  it.each(contentFailureCases('whc001'))(
+    'reports %s as non-retryable snapshot_unavailable with the service recovery',
+    async (_label, hub) => {
+      useHub(hub);
+      const error = await rejectionFrom(read('unesco://site/101'));
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expectContentFailure(
+        error,
+        'whc001',
+        declaredRecovery(siteResource.errors, 'snapshot_unavailable'),
+      );
     },
   );
 

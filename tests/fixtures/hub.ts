@@ -8,6 +8,7 @@
  */
 
 import { httpErrorFromResponse } from '@cyanheads/mcp-ts-core/utils';
+import { EG_FIELDS, ICH_FIELDS, MAB_FIELDS, WHC_FIELDS } from '@/services/unesco-datahub/rows.js';
 import {
   getUnescoDataHubService,
   initUnescoDataHubService,
@@ -33,6 +34,8 @@ export interface HubCall {
 
 /** Overrides for a fake hub. */
 export interface HubOptions {
+  /** The metadata `fields` names per dataset; defaults to `DEFAULT_FIELDS`. */
+  fields?: Partial<Record<DatasetId, readonly string[]>>;
   /** Intercepts a call before the fixtures answer; return `undefined` to fall through. */
   intercept?: (
     call: HubCall,
@@ -62,14 +65,43 @@ const DEFAULT_ROWS: Record<DatasetId, unknown[]> = {
   eg0001: EG_ROWS,
 };
 
+/**
+ * The metadata `fields` names the fake lists by default: each dataset's
+ * allowlist plus `uuid`, a field every dataset carries and the server never
+ * selects.
+ */
+export const DEFAULT_FIELDS: Readonly<Record<DatasetId, readonly string[]>> = {
+  whc001: [...WHC_FIELDS, 'uuid'],
+  ich001: [...ICH_FIELDS, 'uuid'],
+  mab001: [...MAB_FIELDS, 'uuid'],
+  eg0001: [...EG_FIELDS, 'uuid'],
+};
+
+/** Export rows without the given keys, as an export whose select left them out serves them. */
+export function withoutKeys(
+  rows: readonly Record<string, unknown>[],
+  keys: readonly string[],
+): Record<string, unknown>[] {
+  return rows.map((row) =>
+    Object.fromEntries(Object.entries(row).filter(([k]) => !keys.includes(k))),
+  );
+}
+
+/** The metadata `fields` names of `dataset` without `names`. */
+export function fieldsWithout(dataset: DatasetId, names: readonly string[]): readonly string[] {
+  return DEFAULT_FIELDS[dataset].filter((f) => !names.includes(f));
+}
+
 /** A metadata document in the shape the loader reads. */
 export function metaDocument(
   dataset: DatasetId,
   overrides: { data_processed?: string; license?: string; records_count?: number } = {},
   rows: unknown = DEFAULT_ROWS[dataset],
+  fields: readonly string[] = DEFAULT_FIELDS[dataset],
 ): unknown {
   return {
     dataset_id: dataset,
+    fields: fields.map((name) => ({ name, label: name, type: 'text', annotations: {} })),
     metas: {
       default: {
         data_processed: DATA_AS_OF,
@@ -88,6 +120,16 @@ export function httpFailure(status: number, headers: Record<string, string> = {}
     status,
     headers: { 'content-type': 'application/json', ...headers },
   });
+}
+
+/**
+ * A transient failure that ends the load on its first attempt: a 503 whose
+ * Retry-After outlasts the loader's retry budget, so the loader neither
+ * retries nor closes the pacer's rate-limit gate, and `retryAfter` is the 60 s
+ * backoff.
+ */
+export function transientFailure(): Response {
+  return httpFailure(503, { 'retry-after': '3600' });
 }
 
 /** Creates a fake hub. */
@@ -116,6 +158,7 @@ export function createHub(options: HubOptions = {}): FakeHub {
               dataset,
               options.metas?.[dataset],
               options.rows?.[dataset] ?? DEFAULT_ROWS[dataset],
+              options.fields?.[dataset],
             )
           : (options.rows?.[dataset] ?? DEFAULT_ROWS[dataset]),
       );

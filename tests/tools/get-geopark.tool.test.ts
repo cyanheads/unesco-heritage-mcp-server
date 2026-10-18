@@ -13,8 +13,14 @@ import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getGeoparkTool as tool } from '@/mcp-server/tools/definitions/get-geopark.tool.js';
 import { declaredRecovery } from '../fixtures/contract.js';
-import { failureCases, settle, withFakeTimers } from '../fixtures/failures.js';
-import { httpFailure } from '../fixtures/hub.js';
+import {
+  contentFailureCases,
+  expectContentFailure,
+  settle,
+  transportFailureCases,
+  withFakeTimers,
+} from '../fixtures/failures.js';
+import { httpFailure, transientFailure } from '../fixtures/hub.js';
 import { EG_ROWS, egRow } from '../fixtures/rows.js';
 import {
   allText,
@@ -224,7 +230,7 @@ describe('unesco_get_geopark — declared errors', () => {
   });
 
   it('snapshot_unavailable: ServiceUnavailable with dataset, retryAfter, and the declared recovery', async () => {
-    useHub({ intercept: () => httpFailure(404) });
+    useHub({ intercept: () => transientFailure() });
     const result = await runToolContract(tool, { ugg_id: 'EUFR90' });
     const error = errorOf(result);
     expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
@@ -289,15 +295,32 @@ describe('unesco_get_geopark — upstream failure classes', () => {
     vi.useRealTimers();
   });
 
-  it.each(failureCases('eg0001', EG_ROWS.length))(
-    'reports %s as snapshot_unavailable',
+  it.each(transportFailureCases('eg0001', EG_ROWS.length))(
+    'reports %s as retryable snapshot_unavailable with the declared recovery',
     async (_label, intercept) => {
       withFakeTimers();
       useHub({ intercept });
       const error = errorOf(await settle(runToolContract(tool, { ugg_id: 'EUFR90' })));
       expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
-      expect(error.data).toMatchObject({ reason: 'snapshot_unavailable', dataset: 'eg0001' });
-      expect(error.data?.recovery?.hint).toContain('unesco_get_geopark');
+      expect(error.data).toMatchObject({
+        reason: 'snapshot_unavailable',
+        retryable: true,
+        dataset: 'eg0001',
+        recovery: { hint: declaredRecovery(tool.errors, 'snapshot_unavailable') },
+      });
+    },
+  );
+
+  it.each(contentFailureCases('eg0001'))(
+    'reports %s as non-retryable snapshot_unavailable with the service recovery',
+    async (_label, hub) => {
+      useHub(hub);
+      const result = await runToolContract(tool, { ugg_id: 'EUFR90' });
+      const error = errorOf(result);
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expectContentFailure(error, 'eg0001', declaredRecovery(tool.errors, 'snapshot_unavailable'));
+      expect(allText(result)).toContain(`Recovery: ${error.data?.recovery?.hint}`);
+      expect(allText(result)).toContain('not retryable');
     },
   );
 

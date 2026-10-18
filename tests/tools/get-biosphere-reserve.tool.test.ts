@@ -13,8 +13,14 @@ import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getBiosphereReserveTool as tool } from '@/mcp-server/tools/definitions/get-biosphere-reserve.tool.js';
 import { declaredRecovery } from '../fixtures/contract.js';
-import { failureCases, settle, withFakeTimers } from '../fixtures/failures.js';
-import { httpFailure } from '../fixtures/hub.js';
+import {
+  contentFailureCases,
+  expectContentFailure,
+  settle,
+  transportFailureCases,
+  withFakeTimers,
+} from '../fixtures/failures.js';
+import { httpFailure, transientFailure } from '../fixtures/hub.js';
 import { MAB_ROWS, mabRow } from '../fixtures/rows.js';
 import {
   allText,
@@ -127,6 +133,22 @@ describe('unesco_get_biosphere_reserve — record', () => {
     expect(out).not.toHaveProperty('website');
     expect(text).toContain('**Website:** Not available');
     expect(out.transboundary).toBe(true);
+  });
+
+  it('decodes an entity-encoded website, so its query parameters keep their names', async () => {
+    const { result, out, text } = await get({ mab_id: 'PLBrin1993' });
+    const decoded =
+      'http://www.brindle.example.test/index.php?module=roadnews&ClassID=1&act=ReadNews&id=252';
+    expect(out.website).toBe(decoded);
+    expect(tool.output.parse(result.structuredContent).website).toBe(decoded);
+    expect([...new URL(out.website ?? '').searchParams.keys()]).toEqual([
+      'module',
+      'ClassID',
+      'act',
+      'id',
+    ]);
+    expect(text).toContain(`**Website:** ${decoded}`);
+    expect(text).not.toContain('&amp;');
   });
 
   it('gives each participating country of a transboundary reserve its own record', async () => {
@@ -304,7 +326,7 @@ describe('unesco_get_biosphere_reserve — declared errors', () => {
   });
 
   it('snapshot_unavailable: ServiceUnavailable with dataset, retryAfter, and the declared recovery', async () => {
-    useHub({ intercept: () => httpFailure(404) });
+    useHub({ intercept: () => transientFailure() });
     const result = await runToolContract(tool, { mab_id: 'FRAlder1998' });
     const error = errorOf(result);
     expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
@@ -369,15 +391,32 @@ describe('unesco_get_biosphere_reserve — upstream failure classes', () => {
     vi.useRealTimers();
   });
 
-  it.each(failureCases('mab001', MAB_ROWS.length))(
-    'reports %s as snapshot_unavailable',
+  it.each(transportFailureCases('mab001', MAB_ROWS.length))(
+    'reports %s as retryable snapshot_unavailable with the declared recovery',
     async (_label, intercept) => {
       withFakeTimers();
       useHub({ intercept });
       const error = errorOf(await settle(runToolContract(tool, { mab_id: 'FRAlder1998' })));
       expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
-      expect(error.data).toMatchObject({ reason: 'snapshot_unavailable', dataset: 'mab001' });
-      expect(error.data?.recovery?.hint).toContain('unesco_get_biosphere_reserve');
+      expect(error.data).toMatchObject({
+        reason: 'snapshot_unavailable',
+        retryable: true,
+        dataset: 'mab001',
+        recovery: { hint: declaredRecovery(tool.errors, 'snapshot_unavailable') },
+      });
+    },
+  );
+
+  it.each(contentFailureCases('mab001'))(
+    'reports %s as non-retryable snapshot_unavailable with the service recovery',
+    async (_label, hub) => {
+      useHub(hub);
+      const result = await runToolContract(tool, { mab_id: 'FRAlder1998' });
+      const error = errorOf(result);
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expectContentFailure(error, 'mab001', declaredRecovery(tool.errors, 'snapshot_unavailable'));
+      expect(allText(result)).toContain(`Recovery: ${error.data?.recovery?.hint}`);
+      expect(allText(result)).toContain('not retryable');
     },
   );
 

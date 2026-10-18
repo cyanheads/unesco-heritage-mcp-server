@@ -40,8 +40,7 @@ export const biosphereReserveResource = resource('unesco://biosphere-reserve/{ma
     {
       reason: 'snapshot_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'No MAB snapshot has loaded yet and the Data Hub is unreachable',
-      retryable: true,
+      when: 'No MAB snapshot has loaded yet: the Data Hub is unreachable, failing, or rate-limiting (retryable), or it rejected the request or served data this server cannot use (not retryable)',
       thrownBy: 'service',
       recovery:
         'The UNESCO Data Hub could not be reached to load the biosphere reserve network; wait until the next load attempt this error names (retryAfter, in seconds), then read the resource again.',

@@ -13,8 +13,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { biosphereReserveResource as resource } from '@/mcp-server/resources/definitions/biosphere-reserve.resource.js';
 import { getBiosphereReserveTool } from '@/mcp-server/tools/definitions/get-biosphere-reserve.tool.js';
 import { declaredRecovery } from '../fixtures/contract.js';
-import { failureCases, settle, withFakeTimers } from '../fixtures/failures.js';
-import { httpFailure } from '../fixtures/hub.js';
+import {
+  contentFailureCases,
+  expectContentFailure,
+  rejectionFrom,
+  settleRejection,
+  transportFailureCases,
+  withFakeTimers,
+} from '../fixtures/failures.js';
+import { transientFailure } from '../fixtures/hub.js';
 import { matchUri, readResource } from '../fixtures/resource.js';
 import { MAB_ROWS, mabRow } from '../fixtures/rows.js';
 import { disposeServiceAfterEach, structured, useHub } from '../fixtures/tool.js';
@@ -23,6 +30,7 @@ interface ReserveResource {
   mab_id: string;
   name: string;
   sources: { dataset: string }[];
+  website?: string;
 }
 
 const RECORD_KEYS = [
@@ -147,6 +155,17 @@ describe('unesco://biosphere-reserve/{mab_id} — record', () => {
     expect(JSON.parse(JSON.stringify(record))).toEqual(record);
   });
 
+  it('carries an entity-encoded website decoded, as the tool returns it', async () => {
+    const record = await read('unesco://biosphere-reserve/PLBrin1993');
+    expect(record.website).toBe(
+      'http://www.brindle.example.test/index.php?module=roadnews&ClassID=1&act=ReadNews&id=252',
+    );
+    const tool = structured<Record<string, unknown>>(
+      await runToolContract(getBiosphereReserveTool, { mab_id: 'PLBrin1993' }),
+    );
+    expect(record).toEqual(tool);
+  });
+
   it('does not read the sibling datasets', async () => {
     const hub = useHub();
     await read('unesco://biosphere-reserve/FRAlder1998');
@@ -201,7 +220,7 @@ describe('unesco://biosphere-reserve/{mab_id} — errors', () => {
   });
 
   it('snapshot_unavailable: ServiceUnavailable with dataset and retryAfter', async () => {
-    useHub({ intercept: () => httpFailure(404) });
+    useHub({ intercept: () => transientFailure() });
     await expect(read('unesco://biosphere-reserve/FRAlder1998')).rejects.toMatchObject({
       code: JsonRpcErrorCode.ServiceUnavailable,
       data: { reason: 'snapshot_unavailable', dataset: 'mab001', retryAfter: 60 },
@@ -217,16 +236,29 @@ describe('unesco://biosphere-reserve/{mab_id} — upstream failure classes', () 
     vi.useRealTimers();
   });
 
-  it.each(failureCases('mab001', MAB_ROWS.length))(
-    'reports %s as snapshot_unavailable',
+  it.each(transportFailureCases('mab001', MAB_ROWS.length))(
+    'reports %s as retryable snapshot_unavailable',
     async (_label, intercept) => {
       withFakeTimers();
       useHub({ intercept });
-      const pending = read('unesco://biosphere-reserve/FRAlder1998').catch((e: unknown) => e);
-      expect(await settle(pending)).toMatchObject({
+      expect(await settleRejection(read('unesco://biosphere-reserve/FRAlder1998'))).toMatchObject({
         code: JsonRpcErrorCode.ServiceUnavailable,
-        data: { reason: 'snapshot_unavailable', dataset: 'mab001' },
+        data: { reason: 'snapshot_unavailable', retryable: true, dataset: 'mab001' },
       });
+    },
+  );
+
+  it.each(contentFailureCases('mab001'))(
+    'reports %s as non-retryable snapshot_unavailable with the service recovery',
+    async (_label, hub) => {
+      useHub(hub);
+      const error = await rejectionFrom(read('unesco://biosphere-reserve/FRAlder1998'));
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expectContentFailure(
+        error,
+        'mab001',
+        declaredRecovery(resource.errors, 'snapshot_unavailable'),
+      );
     },
   );
 

@@ -8,15 +8,23 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { encodeCursor } from '@cyanheads/mcp-ts-core/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchSitesTool } from '@/mcp-server/tools/definitions/search-sites.tool.js';
 import { makeCursor, readCursor } from '@/services/unesco-datahub/search.js';
 import { declaredRecovery } from '../fixtures/contract.js';
-import { DATA_AS_OF, type HubOptions, httpFailure } from '../fixtures/hub.js';
-import { NEAR_POINT, NEAR_SITE_ROWS, WHC_ROWS, whcRow } from '../fixtures/rows.js';
+import {
+  contentFailureCases,
+  expectContentFailure,
+  settle,
+  transportFailureCases,
+  withFakeTimers,
+} from '../fixtures/failures.js';
+import { DATA_AS_OF, httpFailure, transientFailure } from '../fixtures/hub.js';
+import { manyWhcRows } from '../fixtures/paging.js';
+import { componentsList, NEAR_POINT, NEAR_SITE_ROWS, WHC_ROWS, whcRow } from '../fixtures/rows.js';
 import {
   allText,
   disposeServiceAfterEach,
@@ -179,7 +187,7 @@ describe('unesco_search_sites — input normalization and validation', () => {
 
   it.each([
     ['limit 0', { limit: 0 }],
-    ['limit 51', { limit: 51 }],
+    ['limit 10001', { limit: 10_001 }],
     ['limit 2.5', { limit: 2.5 }],
     ['a non-numeric limit', { limit: 'ten' }],
     ['an unknown category', { category: 'Mythic' }],
@@ -303,10 +311,13 @@ describe('unesco_search_sites — declared errors', () => {
     expect(error.data?.reason).toBe('cursor_mismatch');
   });
 
-  it('invalid_cursor for a malformed cursor (framework-owned)', async () => {
+  it('invalid_cursor, with the declared recovery, for a malformed cursor', async () => {
     const error = errorOf(await runToolContract(searchSitesTool, { cursor: 'garbage' }));
     expect(error.code).toBe(JsonRpcErrorCode.InvalidParams);
     expect(error.data?.reason).toBe('invalid_cursor');
+    expect(error.data?.recovery?.hint).toBe(
+      declaredRecovery(searchSitesTool.errors, 'invalid_cursor'),
+    );
   });
 
   it('invalid_cursor, with the declared recovery, for a cursor whose offset is not a whole number', async () => {
@@ -421,6 +432,46 @@ describe('unesco_search_sites — paging', () => {
     const { text } = await search({ limit: 3 });
     expect(text).toContain('**truncated:** true');
     expect(text).toContain('Showing results 1–3 of 39; pass next_cursor to continue.');
+  });
+});
+
+describe('unesco_search_sites — limit above the per-call cap', () => {
+  beforeEach(() => {
+    useHub({ rows: { whc001: manyWhcRows(120) } });
+  });
+
+  it.each([51, 10_000])(
+    'serves limit %i as the limit-50 page, the clamp leading notice',
+    async (limit) => {
+      const atCap = await search({ limit: 50 });
+      expect(atCap.out.notice).toBe('Showing results 1–50 of 120; pass next_cursor to continue.');
+      const { out, text } = await search({ limit });
+      expect(ids(out)).toEqual(ids(atCap.out));
+      expect(out).toMatchObject({ totalCount: 120, shown: 50, cap: 50, truncated: true });
+      expect(out.next_cursor).toBe(atCap.out.next_cursor);
+      expect(out.applied_filters.limit).toBe(50);
+      expect(out.notice).toBe(
+        `limit ${limit} is above the per-call cap of 50, so this page holds at most 50 results. Showing results 1–50 of 120; pass next_cursor to continue.`,
+      );
+      expect(text).toContain(out.notice as string);
+      expect(text.split('\n')).toContain('- limit: 50');
+    },
+  );
+
+  it('continues a clamped page with results 51–100', async () => {
+    const first = await search({ limit: 51 });
+    const second = await search({ limit: 51, cursor: first.out.next_cursor });
+    expect(ids(second.out)).toEqual(Array.from({ length: 50 }, (_, i) => String(3051 + i)));
+    expect(second.out.notice).toBe(
+      'limit 51 is above the per-call cap of 50, so this page holds at most 50 results. Showing results 51–100 of 120; pass next_cursor to continue.',
+    );
+  });
+
+  it('rejects limit 10001, naming the 10000 ceiling', async () => {
+    const error = errorOf(await runToolContract(searchSitesTool, { limit: 10_001 } as never));
+    expect(error.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(error.data?.reason).toBe('invalid_arguments');
+    expect(error.message).toContain('10000');
   });
 });
 
@@ -658,15 +709,99 @@ describe('unesco_search_sites — near over representative points and components
     });
   });
 
-  it('names a component only when it is strictly nearer than the representative point on the rounded distance', async () => {
+  it('names a component only when it is strictly nearer than the representative point before rounding', async () => {
     const { out } = await search(near(50));
     expect(row(out, '507')).toHaveProperty('nearest_component');
     expect(row(out, '504')).toMatchObject({ distance_km: 33.4 });
     expect(row(out, '504')).not.toHaveProperty('nearest_component'); // component on the point
     expect(row(out, '505')).not.toHaveProperty('nearest_component'); // point nearer
-    expect(row(out, '506')).toMatchObject({ distance_km: 11.1 });
-    expect(row(out, '506')).not.toHaveProperty('nearest_component'); // tie once rounded
+    expect(row(out, '506')).toMatchObject({
+      distance_km: 11.1,
+      nearest_component: { ref: '506-001', name: 'Close Second', latitude: 60.0997, longitude: 5 },
+    }); // 11.086 km against the point's 11.119: a tie once rounded, nearer before
   });
+
+  it('matches at the radius edge on the unrounded distance and never shows a distance past radius_km', async () => {
+    const { result, out } = await search(near(11.09));
+    expect(out.totalCount).toBe(5);
+    expect(out.facets.category).toEqual({ Cultural: 5, Natural: 0, Mixed: 0 });
+    expect(ids(out)).toEqual(['505', '502', '507', '501', '506']);
+    expect(row(out, '506')).toMatchObject({
+      distance_km: 11.09,
+      nearest_component: { ref: '506-001' },
+    });
+    expect(allText(result)).toContain(
+      'Distance: 11.09 km (component 506-001 Close Second at 60.0997, 5)',
+    );
+  });
+
+  it('leaves out a site whose nearest point lies past radius_km by less than the 0.1 km display step', async () => {
+    const { out } = await search(near(2.2)); // 505's point is 2.224 km away
+    expect(out.totalCount).toBe(0);
+    expect(out.sites).toEqual([]);
+    expect(out.notice).toBe(
+      "No site's representative point or component lies within 2.2 km of (60, 5), and 1 site has no coordinates at all, so it never matches near. Increase radius_km.",
+    );
+    const inside = await search(near(2.224));
+    expect(inside.out.sites.map((s) => [s.id_no, s.distance_km])).toEqual([['505', 2.2]]);
+  });
+
+  const spacingSite = (id: string, lat: number) =>
+    whcRow({
+      id_no: id,
+      name_en: `Spacing Site ${id}`,
+      coordinates: { lon: 5, lat },
+      components_count: 0,
+      components_list: null,
+    });
+  const SPACING_ROWS = [
+    spacingSite('610', 60.1),
+    spacingSite('611', 60.0997),
+    spacingSite('612', 60.0997),
+  ];
+
+  it.each([
+    ['in id_no order', SPACING_ROWS],
+    ['in reverse id_no order', [...SPACING_ROWS].reverse()],
+  ])(
+    'orders by unrounded distance, with id_no breaking exact ties only (rows %s)',
+    async (_label, rows) => {
+      useHub({ rows: { whc001: rows } });
+      const { out } = await search(near(30));
+      expect(out.sites.map((s) => [s.id_no, s.distance_km])).toEqual([
+        ['611', 11.1],
+        ['612', 11.1],
+        ['610', 11.1],
+      ]);
+    },
+  );
+
+  const EAST_PART = { name: 'East Part', ref: '620-001', latitude: 60, longitude: 5.1 };
+  const WEST_PART = { name: 'West Part', ref: '620-002', latitude: 60, longitude: 4.9 };
+
+  it.each([
+    ['620-001', [EAST_PART, WEST_PART]],
+    ['620-002', [WEST_PART, EAST_PART]],
+  ])(
+    'names the earlier of two components exactly as near (%s listed first)',
+    async (earlier, parts) => {
+      useHub({
+        rows: {
+          whc001: [
+            whcRow({
+              id_no: '620',
+              name_en: 'Twin Parts Site',
+              coordinates: null,
+              components_count: 2,
+              components_list: componentsList(parts),
+            }),
+          ],
+        },
+      });
+      const { out } = await search(near(30));
+      expect(row(out, '620')).toMatchObject({ nearest_component: { ref: earlier } });
+    },
+  );
 
   it('names the component on the distance fact in format(), by ref alone when it has no name', async () => {
     const { result, out } = await search(near(30));
@@ -784,6 +919,21 @@ describe('unesco_search_sites — keyword tiers', () => {
   it('requires every word: one unmatched word yields no hits', async () => {
     const { out } = await search({ query: 'alderfen nomatchword' });
     expect(out.totalCount).toBe(0);
+  });
+
+  it('never matches a word that appears only in a description translation', async () => {
+    for (const query of ['fortifiee', 'ciudad', 'крепость', '城墙']) {
+      const { out } = await search({ query });
+      expect(out.totalCount, query).toBe(0);
+    }
+    const { out } = await search({ query: 'walled' });
+    expect(out.sites[0]).toMatchObject({
+      id_no: '101',
+      description: 'A synthetic walled town used as test data.',
+      matched_in: 'description',
+    });
+    expect(out.sites[0]).not.toHaveProperty('description_language');
+    expect(out.sites[0]).not.toHaveProperty('description_translations');
   });
 
   it('matches a non-English name and folds accents and case', async () => {
@@ -1452,7 +1602,7 @@ describe('unesco_search_sites — upstream failures and lifecycle', () => {
   });
 
   it('snapshot_unavailable: ServiceUnavailable with dataset, retryAfter, and the declared recovery', async () => {
-    useHub({ intercept: () => httpFailure(404) });
+    useHub({ intercept: () => transientFailure() });
     const result = await runToolContract(searchSitesTool, {});
     const error = errorOf(result);
     expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
@@ -1484,39 +1634,37 @@ describe('unesco_search_sites — upstream failures and lifecycle', () => {
     expect(hub.calls).toHaveLength(0);
   });
 
-  const cases: [string, NonNullable<HubOptions['intercept']>][] = [
-    ['a 404', () => httpFailure(404)],
-    ['a 429 with a long Retry-After', () => httpFailure(429, { 'retry-after': '3600' })],
-    ['a 503', () => httpFailure(503)],
-    [
-      'an HTML body with a 200',
-      (call) =>
-        call.kind === 'export' ? new Response('<html>oops</html>', { status: 200 }) : undefined,
-    ],
-    [
-      'a metadata document of the wrong shape',
-      (call) => (call.kind === 'meta' ? Response.json({ nope: true }) : undefined),
-    ],
-    [
-      'a timeout',
-      () => {
-        throw new McpError(JsonRpcErrorCode.Timeout, 'The request timed out.');
-      },
-    ],
-  ];
+  it.each(transportFailureCases('whc001', WHC_ROWS.length))(
+    'reports %s as retryable snapshot_unavailable with the declared recovery',
+    async (_label, intercept) => {
+      withFakeTimers();
+      useHub({ intercept });
+      const error = errorOf(await settle(runToolContract(searchSitesTool, {})));
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expect(error.data).toMatchObject({
+        reason: 'snapshot_unavailable',
+        retryable: true,
+        dataset: 'whc001',
+        recovery: { hint: declaredRecovery(searchSitesTool.errors, 'snapshot_unavailable') },
+      });
+    },
+  );
 
-  it.each(cases)('reports %s as snapshot_unavailable', async (_label, intercept) => {
-    vi.useFakeTimers({
-      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
-    });
-    useHub({ intercept });
-    const pending = runToolContract(searchSitesTool, {});
-    await vi.advanceTimersByTimeAsync(10_000);
-    const error = errorOf(await pending);
-    expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
-    expect(error.data).toMatchObject({ reason: 'snapshot_unavailable', dataset: 'whc001' });
-    expect(error.data?.recovery?.hint).toContain('unesco_search_sites');
-  });
+  it.each(contentFailureCases('whc001'))(
+    'reports %s as non-retryable snapshot_unavailable with the service recovery',
+    async (_label, hub) => {
+      useHub(hub);
+      const result = await runToolContract(searchSitesTool, {});
+      const error = errorOf(result);
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expectContentFailure(
+        error,
+        'whc001',
+        declaredRecovery(searchSitesTool.errors, 'snapshot_unavailable'),
+      );
+      expect(allText(result)).toContain(`Recovery: ${error.data?.recovery?.hint}`);
+    },
+  );
 
   it('reports a row-count mismatch as snapshot_unavailable', async () => {
     vi.useFakeTimers({

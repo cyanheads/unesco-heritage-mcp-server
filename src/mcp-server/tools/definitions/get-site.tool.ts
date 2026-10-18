@@ -1,34 +1,58 @@
 /**
  * @fileoverview unesco_get_site — one World Heritage site's full record by
- * id_no: description, statement of Outstanding Universal Value, criteria with
- * meanings, States Parties, coordinates, area, years, Danger-list year,
- * component parts, names in six languages, and the main image credit.
+ * id_no: description (English, or another UNESCO language on request, with an
+ * explicit English fallback), statement of Outstanding Universal Value,
+ * criteria with meanings, States Parties, coordinates, area, years, Danger-list
+ * year, component parts, names in six languages, and the main image credit.
  * @module mcp-server/tools/definitions/get-site.tool
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { countOf, renderSources, sourcesField } from '@/mcp-server/shared/enrichment.js';
-import { blankAsUnset, idNoInput } from '@/mcp-server/shared/inputs.js';
+import {
+  countOf,
+  descriptionLanguageFragment,
+  renderSources,
+  sourcesField,
+} from '@/mcp-server/shared/enrichment.js';
+import {
+  BUDGET_CEILING,
+  budgetInput,
+  COMPONENTS_BUDGET,
+  clampBudget,
+  descriptionLanguageInput,
+  idNoInput,
+} from '@/mcp-server/shared/inputs.js';
 import { bareUrl, inline, quoted } from '@/mcp-server/shared/markdown.js';
 import { buildSiteRecord } from '@/services/unesco-datahub/records.js';
 import {
   getUnescoDataHubService,
   sourceOf,
 } from '@/services/unesco-datahub/unesco-datahub-service.js';
-import { CATEGORIES, CRITERIA_CODES, REGIONS } from '@/services/unesco-datahub/vocabulary.js';
+import {
+  CATEGORIES,
+  CRITERIA_CODES,
+  REGIONS,
+  SITE_DESCRIPTION_LANGUAGES,
+} from '@/services/unesco-datahub/vocabulary.js';
 
 export const getSiteTool = tool('unesco_get_site', {
   title: 'Get World Heritage site',
   description:
-    "Fetch one World Heritage site's full record by id_no: its description, statement of Outstanding Universal Value, each inscription criterion with its meaning (criterion (vi) marked as inferred), States Parties, coordinates, area, inscription and later years, Danger-list year, component parts, names in six languages, and the main image with its copyright credit. Intangible heritage UNESCO links to the site is listed by unesco_search_intangible_heritage with world_heritage_site.",
+    "Fetch one World Heritage site's full record by id_no: its description, statement of Outstanding Universal Value, each inscription criterion with its meaning (criterion (vi) marked as inferred), States Parties, coordinates, area, inscription and later years, Danger-list year, component parts, names in six languages, and the main image with its copyright credit. description_language returns UNESCO's French, Spanish, Russian, Arabic, or Chinese description instead of the English one. Intangible heritage UNESCO links to the site is listed by unesco_search_intangible_heritage with world_heritage_site.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     id_no: idNoInput(
       "The site's World Heritage id_no, from unesco_search_sites. A number, a digit string, or the site's whc.unesco.org/en/list/{id} page URL.",
     ),
-    max_components: blankAsUnset(z.number().int().min(0).max(1000).default(20)).describe(
-      'Maximum component parts to list (0–1000, default 20). 0 omits the list but keeps components_total; the largest site has 758 components.',
+    max_components: budgetInput(
+      0,
+      20,
+      `Maximum component parts to list (default 20). One call lists at most ${COMPONENTS_BUDGET.cap}: a larger value, up to ${BUDGET_CEILING}, is served as ${COMPONENTS_BUDGET.cap} and notice says so. 0 omits the list but keeps components_total; the largest site has 758 components.`,
+    ),
+    description_language: descriptionLanguageInput(
+      SITE_DESCRIPTION_LANGUAGES,
+      'Language of the description UNESCO publishes for the site: en, fr, es, ru, ar, or zh, in any case. Unset returns the English description. When UNESCO publishes none in that language, the English one is returned with description_language en, and notice says so. The statement of Outstanding Universal Value is English only.',
     ),
   }),
   output: z.object({
@@ -89,11 +113,24 @@ export const getSiteTool = tool('unesco_get_site', {
     area_hectares: z.number().optional().describe('Area in hectares, when recorded.'),
     latitude: z.number().optional().describe('Representative point latitude, when recorded.'),
     longitude: z.number().optional().describe('Representative point longitude, when recorded.'),
-    description: z.string().optional().describe("UNESCO's short description, when recorded."),
+    description: z
+      .string()
+      .optional()
+      .describe(
+        "UNESCO's short description, when recorded: in English, or in the language description_language names.",
+      ),
+    description_language: z
+      .enum(SITE_DESCRIPTION_LANGUAGES)
+      .optional()
+      .describe(
+        'Language of description, present when the description_language input was set and a description is returned: the requested language, or en when UNESCO publishes no description in it.',
+      ),
     justification: z
       .string()
       .optional()
-      .describe('The statement of Outstanding Universal Value, when recorded.'),
+      .describe(
+        'The statement of Outstanding Universal Value, in English (UNESCO publishes no translation), when recorded.',
+      ),
     components: z
       .array(
         z
@@ -126,10 +163,21 @@ export const getSiteTool = tool('unesco_get_site', {
   }),
   enrichment: {
     sources: sourcesField,
-    truncated: z.boolean().describe('True when the component list was capped at max_components.'),
+    truncated: z
+      .boolean()
+      .describe('True when the list stops at cap with more readable components left.'),
     shown: z.number().describe('Components listed.'),
-    cap: z.number().describe('The max_components that was applied.'),
-    notice: z.string().optional().describe('How to list more components, or why some are missing.'),
+    cap: z
+      .number()
+      .describe(
+        `The max_components applied: the request, or the per-call cap of ${COMPONENTS_BUDGET.cap} when it was larger.`,
+      ),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'That max_components was above the per-call cap, that the description is not in the requested description_language, how to list more components, or why some are missing.',
+      ),
   },
   enrichmentTrailer: {
     sources: { render: renderSources },
@@ -146,8 +194,7 @@ export const getSiteTool = tool('unesco_get_site', {
     {
       reason: 'snapshot_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'No World Heritage snapshot has loaded yet and the Data Hub is unreachable',
-      retryable: true,
+      when: 'No World Heritage snapshot has loaded yet: the Data Hub is unreachable, failing, or rate-limiting (retryable), or it rejected the request or served data this server cannot use (not retryable)',
       thrownBy: 'service',
       recovery:
         'The UNESCO Data Hub could not be reached to load the World Heritage List; wait until the next load attempt this error names (retryAfter, in seconds), then call unesco_get_site again.',
@@ -164,24 +211,35 @@ export const getSiteTool = tool('unesco_get_site', {
       });
     }
 
-    const record = buildSiteRecord(site, input.max_components);
+    const components = clampBudget(COMPONENTS_BUDGET, input.max_components);
+    const language = input.description_language;
+    const record = buildSiteRecord(site, components.applied, language);
     const parsed = site.components.length;
     const shown = record.components.length;
-    ctx.enrich({ truncated: false, shown, cap: input.max_components });
+    ctx.enrich({ truncated: false, shown, cap: components.applied });
 
-    const unreadable =
-      site.components_unparsed > 0
-        ? `${site.components_unparsed} of the site's ${countOf(site.components_total, 'component')} could not be read from UNESCO's component list and are omitted.`
-        : '';
-    if (parsed > input.max_components) {
-      const guidance = `Showing ${shown} of ${countOf(parsed, 'component')}; call unesco_get_site with a higher max_components (up to 1000) to list more.`;
-      ctx.enrich.truncated({
-        shown,
-        cap: input.max_components,
-        guidance: unreadable ? `${guidance} ${unreadable}` : guidance,
-      });
-    } else if (unreadable) {
-      ctx.enrich.notice(unreadable);
+    const truncated = parsed > components.applied;
+    const fragments = components.fragment ? [components.fragment] : [];
+    const fallback =
+      language && descriptionLanguageFragment('site', language, record.description_language);
+    if (fallback) fragments.push(fallback);
+    if (truncated) {
+      fragments.push(
+        components.applied < COMPONENTS_BUDGET.cap
+          ? `Showing ${shown} of ${countOf(parsed, 'component')}; call unesco_get_site with a higher max_components (up to ${COMPONENTS_BUDGET.cap}) to list more.`
+          : `Showing ${shown} of ${countOf(parsed, 'component')}, the most one call lists.`,
+      );
+    }
+    if (site.components_unparsed > 0) {
+      fragments.push(
+        `${site.components_unparsed} of the site's ${countOf(site.components_total, 'component')} could not be read from UNESCO's component list and are omitted.`,
+      );
+    }
+    const notice = fragments.join(' ');
+    if (truncated) {
+      ctx.enrich.truncated({ shown, cap: components.applied, guidance: notice });
+    } else if (notice) {
+      ctx.enrich.notice(notice);
     }
 
     ctx.log.info('Site fetched', { id_no: site.id_no, components: shown });
@@ -214,7 +272,10 @@ export const getSiteTool = tool('unesco_get_site', {
           )
         : ['- Not recorded']),
       '',
-      quoted('Description', r.description),
+      quoted(
+        r.description_language ? `Description (${r.description_language})` : 'Description',
+        r.description,
+      ),
       '',
       quoted('Statement of Outstanding Universal Value', r.justification),
       '',

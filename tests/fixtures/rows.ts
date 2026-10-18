@@ -33,6 +33,11 @@ export function whcRow(overrides: Record<string, unknown> = {}): Record<string, 
     name_ar: null,
     name_zh: null,
     short_description_en: 'A synthetic site used as test data.',
+    short_description_fr: 'Un site synthétique utilisé comme données de test.',
+    short_description_es: null,
+    short_description_ru: null,
+    short_description_ar: null,
+    short_description_zh: null,
     justification_en: 'Criterion (iv): a synthetic ensemble.',
     category: 'Cultural',
     criteria_txt: '(iv)',
@@ -65,6 +70,7 @@ export function ichRow(overrides: Record<string, unknown> = {}): Record<string, 
     title_en: 'Placeholder Element',
     title_fr: 'Element Fictif',
     description_en: 'A synthetic practice used as test data.',
+    description_fr: 'Une pratique synthétique utilisée comme données de test.',
     type_of_element_en: 'Representative List',
     countries: ['FR'],
     http_url_en: 'https://ich.unesco.org/en/RL/09000',
@@ -175,6 +181,11 @@ export const WHC_ROWS: Record<string, unknown>[] = [
     name_es: 'Casco Antiguo de Alderfen',
     name_zh: '奥德芬古城',
     short_description_en: 'A synthetic walled town used as test data.',
+    short_description_fr: 'Une ville fortifiée synthétique utilisée comme données de test.',
+    short_description_es: 'Una ciudad amurallada sintética usada como datos de prueba.',
+    short_description_ru: 'Синтетический город-крепость для тестовых данных.',
+    short_description_ar: 'مدينة مسورة اصطناعية تستخدم كبيانات اختبار.',
+    short_description_zh: '用作测试数据的合成城墙小镇。',
     justification_en:
       'Criterion (ii): synthetic exchange of ideas.\n\nCriterion (iv): synthetic ensemble.',
     criteria_txt: '(ii)(iv)',
@@ -195,6 +206,7 @@ export const WHC_ROWS: Record<string, unknown>[] = [
     name_en: 'Brindle Frontier Forest',
     name_fr: 'Forêt Frontalière de Brindle',
     short_description_en: 'A synthetic forest shared by two states.',
+    short_description_fr: 'Une forêt synthétique partagée par deux États.',
     justification_en: 'Criterion (ix): synthetic ecological processes.',
     category: 'Natural',
     criteria_txt: '(ix)(x)',
@@ -255,6 +267,7 @@ export const WHC_ROWS: Record<string, unknown>[] = [
     name_en: 'Hollowmere Sparse Site',
     name_fr: 'Site Épars de Hollowmere',
     short_description_en: null,
+    short_description_fr: null,
     justification_en: null,
     criteria_txt: '(iii)',
     states_names: ['Peru'],
@@ -293,6 +306,8 @@ export const WHC_ROWS: Record<string, unknown>[] = [
     name_en: 'Lantern <em>Bridge</em><br />Quarter',
     name_fr: 'Quartier du <I>Pont</I> Lanterne',
     short_description_en: 'Text with a &#39;quoted&#39; word &amp; more.\nSecond line here.',
+    short_description_fr:
+      'Texte avec un mot &#39;cité&#39; &amp; <em>plus</em>.<br />Seconde ligne.',
     justification_en: null,
     criteria_txt: '(iv)',
     states_names: ['Germany'],
@@ -363,9 +378,9 @@ const nearSite = (id: string, name: string, overrides: Record<string, unknown>) 
  * away); 502 via its nameless second component 3.3 (no representative point);
  * 503 has neither point (and no description, area, or image); 504 at 33.4, its
  * one component on its representative point; 505 at 2.2 by its representative
- * point, its component at 111.2; 506 at 11.1 by both points, the component
- * nearer only before rounding; 507 via its component 4.4 (representative point
- * 27.8).
+ * point (2.224 unrounded), its component at 111.2; 506 at 11.1 by both points,
+ * the component nearer only before rounding (11.086 against the point's
+ * 11.119); 507 via its component 4.4 (representative point 27.8).
  */
 export const NEAR_SITE_ROWS: Record<string, unknown>[] = [
   nearSite('501', 'Farspan Serial Ensemble', {
@@ -387,6 +402,7 @@ export const NEAR_SITE_ROWS: Record<string, unknown>[] = [
   }),
   nearSite('503', 'Unplotted Record', {
     short_description_en: null,
+    short_description_fr: null,
     area_hectares: null,
     coordinates: null,
     components_count: 0,
@@ -432,6 +448,7 @@ export const ICH_ROWS: Record<string, unknown>[] = [
     title_en: 'Synthetic Weaving Rite',
     title_fr: 'Rite de Tissage Synthétique',
     description_en: 'First paragraph.\n\nSecond paragraph.',
+    description_fr: 'Premier paragraphe.\n\nDeuxième <b>paragraphe</b> &amp; fin.',
     countries: ['FR', 'BE'],
     concepts_primary_names: ['Textile craft'],
     concepts_secondary_names: ['Community', 'Ritual'],
@@ -450,6 +467,7 @@ export const ICH_ROWS: Record<string, unknown>[] = [
     ich_public_ref: '1002',
     title_en: 'Synthetic Song Cycle',
     title_fr: 'Cycle de Chants Synthétique',
+    description_fr: null,
     type_of_element_en: 'Urgent Safeguarding List',
     countries: ['ET'],
     inscription_year: '2008',
@@ -502,6 +520,8 @@ export const MAB_ROWS: Record<string, unknown>[] = [
     date: '1993-01-01',
     tbr: 'True',
     coordinates: { lon: 14.6, lat: 52.5 },
+    website:
+      'http://www.brindle.example.test/index.php?module=roadnews&amp;ClassID=1&amp;act=ReadNews&amp;id=252',
   }),
   mabRow({
     mab_id: 'PEÑandu2001',

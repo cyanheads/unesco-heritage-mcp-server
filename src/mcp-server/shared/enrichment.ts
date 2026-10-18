@@ -2,15 +2,22 @@
  * @fileoverview Shared enrichment fields and trailer renderers: the `sources`
  * attribution block every data response carries, the page fields every search
  * tool carries, the composed page notice and its combined-filters zero-hit
- * fragment, the count phrase notices and page headers use, and the facet-count
- * line the search trailers render.
+ * fragment, the get tools' description-language fragment, the count phrase
+ * notices and page headers use, and the facet-count line the search trailers
+ * render.
  * @module mcp-server/shared/enrichment
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
+import { type ClampedBudget, LIMIT_BUDGET } from '@/mcp-server/shared/inputs.js';
 import { inline } from '@/mcp-server/shared/markdown.js';
 import type { SourceEntry } from '@/services/unesco-datahub/types.js';
-import { type DatasetId, LICENSE_URL } from '@/services/unesco-datahub/vocabulary.js';
+import {
+  type DatasetId,
+  LANGUAGE_NAMES,
+  LICENSE_URL,
+  type SiteDescriptionLanguage,
+} from '@/services/unesco-datahub/vocabulary.js';
 
 /** The `sources` field whose `dataset` enum names exactly `datasets`. */
 export function sourcesFieldOf(datasets: readonly [DatasetId, ...DatasetId[]]) {
@@ -56,7 +63,11 @@ export const pageEnrichment = {
   totalCount: z.number().describe('Total matches across all pages.'),
   truncated: z.boolean().describe('True when more results remain beyond this page.'),
   shown: z.number().describe('Number of results on this page.'),
-  cap: z.number().describe('The page size (limit) that was applied.'),
+  cap: z
+    .number()
+    .describe(
+      `The page size applied: limit, or the per-call cap of ${LIMIT_BUDGET.cap} when limit was larger.`,
+    ),
   notice: z
     .string()
     .optional()
@@ -98,19 +109,42 @@ export function combinedFiltersFragment(
 }
 
 /**
- * Composes the page notice from the tool's fragments plus the continuation
+ * The notice fragment of a get tool whose description is not in the requested
+ * `description_language`: UNESCO publishes none in that language, so the
+ * record carries the English text (`served` is `'en'`) or, with no English
+ * text either, no description (`served` is undefined). Undefined when the
+ * description is in the requested language.
+ */
+export function descriptionLanguageFragment(
+  noun: string,
+  requested: SiteDescriptionLanguage,
+  served: SiteDescriptionLanguage | undefined,
+): string | undefined {
+  if (served === requested) return;
+  const missing = LANGUAGE_NAMES[requested];
+  return served === 'en'
+    ? `UNESCO publishes no ${missing} description for this ${noun}; description is in English.`
+    : `UNESCO publishes no ${requested === 'en' ? missing : `${missing} or English`} description for this ${noun}.`;
+}
+
+/**
+ * Composes the page notice: the `limit` clamp fragment first when the request
+ * exceeded the page cap, then the tool's fragments, then the continuation
  * fragment when more results remain. The caller passes `notice` to
  * `ctx.enrich.truncated` as `guidance` when `more`, else to `ctx.enrich.notice`
  * when non-empty.
  */
 export function composePageNotice(args: {
   fragments: readonly string[];
+  limit: ClampedBudget;
   offset: number;
   shown: number;
   total: number;
 }): { more: boolean; notice: string } {
   const more = args.offset + args.shown < args.total;
-  const parts = [...args.fragments];
+  const parts = args.limit.fragment
+    ? [args.limit.fragment, ...args.fragments]
+    : [...args.fragments];
   if (more) {
     parts.push(
       `Showing results ${args.offset + 1}–${args.offset + args.shown} of ${args.total}; pass next_cursor to continue.`,

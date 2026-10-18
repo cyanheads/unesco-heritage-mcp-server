@@ -16,8 +16,14 @@ import { searchIntangibleHeritageTool as tool } from '@/mcp-server/tools/definit
 import { makeCursor, readCursor } from '@/services/unesco-datahub/search.js';
 import { getUnescoDataHubService } from '@/services/unesco-datahub/unesco-datahub-service.js';
 import { declaredRecovery } from '../fixtures/contract.js';
-import { failureCases, settle, withFakeTimers } from '../fixtures/failures.js';
-import { httpFailure } from '../fixtures/hub.js';
+import {
+  contentFailureCases,
+  expectContentFailure,
+  settle,
+  transportFailureCases,
+  withFakeTimers,
+} from '../fixtures/failures.js';
+import { httpFailure, transientFailure } from '../fixtures/hub.js';
 import { manyIchRows } from '../fixtures/paging.js';
 import { ICH_ROWS, ichRow } from '../fixtures/rows.js';
 import {
@@ -137,7 +143,7 @@ describe('unesco_search_intangible_heritage — basics', () => {
 
   it.each([
     ['limit 0', { limit: 0 }],
-    ['limit 51', { limit: 51 }],
+    ['limit 10001', { limit: 10_001 }],
     ['a fractional limit', { limit: 2.5 }],
     ['a string limit', { limit: '10' }],
     ['a country over 64 characters', { country: 'A'.repeat(65) }],
@@ -179,6 +185,20 @@ describe('unesco_search_intangible_heritage — keyword query', () => {
       new Set(expected.length === 3 ? ['name'] : [tier]),
     );
   });
+
+  it.each([
+    ['first', 'premier', ['1001']],
+    ['second paragraph', 'deuxieme paragraphe', ['1001']],
+    ['practice', 'pratique', ['1003', '1002']],
+  ])(
+    'matches %s in the English description but never its French counterpart %s',
+    async (english, french, expected) => {
+      const { out } = await search({ query: english });
+      expect(refs(out)).toEqual(expected);
+      expect(new Set(out.elements.map((e) => e.matched_in))).toEqual(new Set(['description']));
+      expect((await search({ query: french })).out.totalCount).toBe(0);
+    },
+  );
 
   it('requires every word to match and matches only at the start of a word', async () => {
     expect(refs((await search({ query: 'weaving practice' })).out)).toEqual([]);
@@ -663,6 +683,46 @@ describe('unesco_search_intangible_heritage — pagination and cursors', () => {
   });
 });
 
+describe('unesco_search_intangible_heritage — limit above the per-call cap', () => {
+  beforeEach(() => {
+    useHub({ rows: { ich001: manyIchRows(120) } });
+  });
+
+  it.each([51, 10_000])(
+    'serves limit %i as the limit-50 page, the clamp leading notice',
+    async (limit) => {
+      const atCap = await search({ limit: 50 });
+      expect(atCap.out.notice).toBe('Showing results 1–50 of 120; pass next_cursor to continue.');
+      const { out, text } = await search({ limit });
+      expect(refs(out)).toEqual(refs(atCap.out));
+      expect(out).toMatchObject({ totalCount: 120, shown: 50, cap: 50, truncated: true });
+      expect(out.next_cursor).toBe(atCap.out.next_cursor);
+      expect(out.applied_filters.limit).toBe(50);
+      expect(out.notice).toBe(
+        `limit ${limit} is above the per-call cap of 50, so this page holds at most 50 results. Showing results 1–50 of 120; pass next_cursor to continue.`,
+      );
+      expect(text).toContain(out.notice as string);
+    },
+  );
+
+  it('continues a clamped page with results 51–100', async () => {
+    const first = (await search({ limit: 51 })).out;
+    const second = (await search({ limit: 51, cursor: first.next_cursor })).out;
+    const atCap = (await search({ limit: 50 })).out;
+    const atCapSecond = (await search({ limit: 50, cursor: atCap.next_cursor })).out;
+    expect(refs(second)).toEqual(refs(atCapSecond));
+    expect(second.notice).toBe(
+      'limit 51 is above the per-call cap of 50, so this page holds at most 50 results. Showing results 51–100 of 120; pass next_cursor to continue.',
+    );
+  });
+
+  it('rejects limit 10001, naming the 10000 ceiling', async () => {
+    const error = errorOf(await runToolContract(tool, { limit: 10_001 } as never));
+    expect(error.data?.reason).toBe('invalid_arguments');
+    expect(error.message).toContain('10000');
+  });
+});
+
 describe('unesco_search_intangible_heritage — zero-result and under-cap pages (enrichment contract)', () => {
   beforeEach(() => {
     useHub();
@@ -828,21 +888,37 @@ describe('unesco_search_intangible_heritage — upstream failure classes', () =>
     vi.useRealTimers();
   });
 
-  it.each(failureCases('ich001', ICH_ROWS.length))(
-    'reports %s as snapshot_unavailable',
+  it.each(transportFailureCases('ich001', ICH_ROWS.length))(
+    'reports %s as retryable snapshot_unavailable with the declared recovery',
     async (_label, intercept) => {
       withFakeTimers();
       useHub({ intercept });
       const result = await settle(runToolContract(tool, {}));
       const error = errorOf(result);
       expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
-      expect(error.data).toMatchObject({ reason: 'snapshot_unavailable', dataset: 'ich001' });
-      expect(error.data?.recovery?.hint).toContain('unesco_search_intangible_heritage');
+      expect(error.data).toMatchObject({
+        reason: 'snapshot_unavailable',
+        retryable: true,
+        dataset: 'ich001',
+        recovery: { hint: declaredRecovery(tool.errors, 'snapshot_unavailable') },
+      });
+    },
+  );
+
+  it.each(contentFailureCases('ich001'))(
+    'reports %s as non-retryable snapshot_unavailable with the service recovery',
+    async (_label, hub) => {
+      useHub(hub);
+      const result = await runToolContract(tool, {});
+      const error = errorOf(result);
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expectContentFailure(error, 'ich001', declaredRecovery(tool.errors, 'snapshot_unavailable'));
+      expect(allText(result)).toContain(`Recovery: ${error.data?.recovery?.hint}`);
     },
   );
 
   it('declares the recovery on the wire for a plain failure', async () => {
-    useHub({ intercept: () => httpFailure(404) });
+    useHub({ intercept: () => transientFailure() });
     const result = await runToolContract(tool, {});
     const error = errorOf(result);
     expect(error.data).toMatchObject({

@@ -1,9 +1,11 @@
 /**
  * @fileoverview Strict Zod schemas for the `exports/json` rows of `whc001`,
- * `ich001`, `mab001`, and `eg0001` (exactly the allowlisted keys), the edge
- * parsers (text cleanup, criteria and the criterion (vi) inference, the
- * pseudo-JSON `components_list`, the `whc_sites` JSON string, the year lists,
- * booleans), and the row → domain mappers.
+ * `ich001`, `mab001`, and `eg0001` (exactly the selected keys: the allowlist,
+ * less any optional field the dataset's metadata no longer lists), the dataset
+ * metadata schema, the edge parsers (text and URL entity decoding, criteria
+ * and the criterion (vi) inference, the pseudo-JSON `components_list`, the
+ * `whc_sites` JSON string, the year lists, booleans), and the row → domain
+ * mappers.
  * @module services/unesco-datahub/rows
  */
 
@@ -39,6 +41,11 @@ export const WHC_FIELDS = [
   'name_ar',
   'name_zh',
   'short_description_en',
+  'short_description_fr',
+  'short_description_es',
+  'short_description_ru',
+  'short_description_ar',
+  'short_description_zh',
   'justification_en',
   'category',
   'criteria_txt',
@@ -65,6 +72,7 @@ export const ICH_FIELDS = [
   'title_en',
   'title_fr',
   'description_en',
+  'description_fr',
   'type_of_element_en',
   'countries',
   'http_url_en',
@@ -128,9 +136,47 @@ export const EG_FIELDS = [
   'url',
 ] as const;
 
+/**
+ * The allowlisted fields each dataset can load without: when the dataset's
+ * metadata no longer lists one, the select leaves it out and the mappers read
+ * it as absent. A missing image credit or URL drops the record's image, a
+ * missing caption only the caption, and a missing description translation
+ * reads as unpublished in that language. Any other allowlisted field the
+ * metadata no longer lists fails the load.
+ */
+export const OPTIONAL_FIELDS = {
+  whc001: [
+    'short_description_fr',
+    'short_description_es',
+    'short_description_ru',
+    'short_description_ar',
+    'short_description_zh',
+    'main_image_url',
+    'main_image_copyright',
+    'main_image_author',
+  ],
+  ich001: [
+    'description_fr',
+    'main_image_url',
+    'main_image_caption_en',
+    'main_image_copyright',
+    'main_image_author',
+  ],
+  mab001: ['website'],
+  eg0001: ['website'],
+} as const satisfies {
+  whc001: readonly (typeof WHC_FIELDS)[number][];
+  ich001: readonly (typeof ICH_FIELDS)[number][];
+  mab001: readonly (typeof MAB_FIELDS)[number][];
+  eg0001: readonly (typeof EG_FIELDS)[number][];
+};
+
 /* ------------------------------------------------------------------ */
 /* Row schemas                                                         */
 /* ------------------------------------------------------------------ */
+
+/** `T` with the keys `K` optional: a row whose export may have left those fields out. */
+type WithOptional<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
 
 const TrueFalse = z.enum(['True', 'False']);
 const Year = z.string().regex(/^\d{4}$/);
@@ -157,6 +203,11 @@ export const WhcRowSchema = z
     name_ar: ShortText.nullable(),
     name_zh: ShortText.nullable(),
     short_description_en: FreeText.nullable(),
+    short_description_fr: FreeText.nullable(),
+    short_description_es: FreeText.nullable(),
+    short_description_ru: FreeText.nullable(),
+    short_description_ar: FreeText.nullable(),
+    short_description_zh: FreeText.nullable(),
     justification_en: FreeText.nullable(),
     category: z.enum(CATEGORIES),
     criteria_txt: z.string().regex(CRITERIA_TXT).nullable(),
@@ -180,7 +231,10 @@ export const WhcRowSchema = z
     main_image_author: ShortText.nullable(),
   })
   .strict();
-export type WhcRow = z.infer<typeof WhcRowSchema>;
+export type WhcRow = WithOptional<
+  z.infer<typeof WhcRowSchema>,
+  (typeof OPTIONAL_FIELDS.whc001)[number]
+>;
 
 export const IchRowSchema = z
   .object({
@@ -189,6 +243,7 @@ export const IchRowSchema = z
     title_en: ShortText,
     title_fr: ShortText,
     description_en: FreeText,
+    description_fr: FreeText.nullable(),
     type_of_element_en: z.enum(INTANGIBLE_LISTS),
     countries: z.array(z.string().regex(/^[A-Z]{2}$/)).min(1),
     http_url_en: UrlText,
@@ -201,7 +256,10 @@ export const IchRowSchema = z
     main_image_author: ShortText.nullable(),
   })
   .strict();
-export type IchRow = z.infer<typeof IchRowSchema>;
+export type IchRow = WithOptional<
+  z.infer<typeof IchRowSchema>,
+  (typeof OPTIONAL_FIELDS.ich001)[number]
+>;
 
 export const MabRowSchema = z
   .object({
@@ -238,7 +296,10 @@ export const MabRowSchema = z
     sids: TrueFalse,
   })
   .strict();
-export type MabRow = z.infer<typeof MabRowSchema>;
+export type MabRow = WithOptional<
+  z.infer<typeof MabRowSchema>,
+  (typeof OPTIONAL_FIELDS.mab001)[number]
+>;
 
 export const EgRowSchema = z
   .object({
@@ -262,10 +323,32 @@ export const EgRowSchema = z
     url: UrlText,
   })
   .strict();
-export type EgRow = z.infer<typeof EgRowSchema>;
+export type EgRow = WithOptional<
+  z.infer<typeof EgRowSchema>,
+  (typeof OPTIONAL_FIELDS.eg0001)[number]
+>;
 
-/** The dataset metadata fields the loader reads (the rest of the document is ignored). */
+/**
+ * The `.omit()` mask of a row schema for one export: the fields of `optional`
+ * that `listed` (the names in the dataset's metadata `fields`) leaves out, as
+ * the export's select does. The omitted schema stays strict, so every selected
+ * field must be present and no other may appear.
+ */
+export function unlistedMask<K extends string>(
+  optional: readonly K[],
+  listed: ReadonlySet<string>,
+): Partial<Record<K, true>> {
+  const mask: Partial<Record<K, true>> = {};
+  for (const field of optional) if (!listed.has(field)) mask[field] = true;
+  return mask;
+}
+
+/**
+ * The dataset metadata the loader reads: the field names, which bound the
+ * export's select, and three `metas` values. The rest of the document is ignored.
+ */
 export const DatasetMetaSchema = z.object({
+  fields: z.array(z.object({ name: z.string().max(200) })),
   metas: z.object({
     default: z.object({
       data_processed: z.string().max(100),
@@ -306,34 +389,40 @@ const WhcSiteLinksSchema = z.array(
 const LIST_TAGS = /(?:(?:<|&lt;)\/?(?:ul|li)\s*(?:>|&gt;)\s*)+/gi;
 const INLINE_TAG = /<\/?(?:em|i|u|b|strong|sup|small)\s*>/gi;
 const LINE_BREAK_TAG = /<br\s*\/?>/gi;
-const NAMED_ENTITIES: Readonly<Record<string, string>> = {
-  amp: '&',
-  lt: '<',
-  gt: '>',
-  quot: '"',
-  apos: "'",
-  nbsp: '\u00a0',
-};
+const ENTITY = /&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi;
+const NAMED_ENTITIES: ReadonlyMap<string, string> = new Map([
+  ['amp', '&'],
+  ['lt', '<'],
+  ['gt', '>'],
+  ['quot', '"'],
+  ['apos', "'"],
+  ['nbsp', '\u00a0'],
+]);
+
+/**
+ * Decodes numeric entities, the five XML named entities, and `&nbsp;`, any
+ * case, in one left-to-right pass: decoded text is never read again, so
+ * `&amp;lt;` becomes `&lt;`. Any other `&…;` text stays as written.
+ */
+export function decodeEntities(text: string): string {
+  return text.replace(ENTITY, (whole, entity: string) => {
+    const lower = entity.toLowerCase();
+    if (lower.startsWith('#x')) return safeCodePoint(Number.parseInt(lower.slice(2), 16), whole);
+    if (lower.startsWith('#')) return safeCodePoint(Number.parseInt(lower.slice(1), 10), whole);
+    return NAMED_ENTITIES.get(lower) ?? whole;
+  });
+}
 
 /**
  * Turns each run of list tags (raw or entity-encoded) into a line break, so a
  * list reads one item per line; strips UNESCO's inline markup tags (the closed
- * list, any case); turns `<br>` into a space; then decodes numeric entities,
- * the five XML named entities, and `&nbsp;`. Other `<…>` text passes through.
- * Trimmed.
+ * list, any case); turns `<br>` into a space; then decodes entities
+ * (`decodeEntities`). Other `<…>` text passes through. Trimmed.
  */
 export function cleanText(text: string): string {
-  return text
-    .replace(LIST_TAGS, '\n')
-    .replace(LINE_BREAK_TAG, ' ')
-    .replace(INLINE_TAG, '')
-    .replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (whole, entity: string) => {
-      const lower = entity.toLowerCase();
-      if (lower.startsWith('#x')) return safeCodePoint(Number.parseInt(lower.slice(2), 16), whole);
-      if (lower.startsWith('#')) return safeCodePoint(Number.parseInt(lower.slice(1), 10), whole);
-      return NAMED_ENTITIES[lower] ?? whole;
-    })
-    .trim();
+  return decodeEntities(
+    text.replace(LIST_TAGS, '\n').replace(LINE_BREAK_TAG, ' ').replace(INLINE_TAG, ''),
+  ).trim();
 }
 
 function safeCodePoint(code: number, fallback: string): string {
@@ -342,9 +431,9 @@ function safeCodePoint(code: number, fallback: string): string {
     : fallback;
 }
 
-/** Cleans a nullable upstream string; empty results become `undefined`. */
-function cleanOptional(text: string | null): string | undefined {
-  if (text === null) return;
+/** Cleans a nullable or absent upstream string; empty results become `undefined`. */
+function cleanOptional(text: string | null | undefined): string | undefined {
+  if (text === null || text === undefined) return;
   const cleaned = cleanText(text);
   return cleaned.length > 0 ? cleaned : undefined;
 }
@@ -466,12 +555,14 @@ export function parseWhcSites(json: string | null): { id_no: string; name: strin
 }
 
 /**
- * An upstream URL as the WHATWG parser serializes it (`href`, which drops tabs
- * and line breaks, so none reaches a markdown line), or `undefined` when it is
- * blank or not http(s).
+ * An upstream URL with its entities decoded (`decodeEntities`, so `&amp;` and
+ * `&#38;` separate query parameters as `&`), serialized as the WHATWG parser
+ * does (`href`, which drops tabs and line breaks, so none reaches a markdown
+ * line), or `undefined` when it is absent, blank, or not http(s). Only
+ * entities are decoded; tags are left to the parser.
  */
-function httpUrl(value: string | null): string | undefined {
-  const url = value ? URL.parse(value.trim()) : null;
+function httpUrl(value: string | null | undefined): string | undefined {
+  const url = value ? URL.parse(decodeEntities(value).trim()) : null;
   return url?.protocol === 'http:' || url?.protocol === 'https:' ? url.href : undefined;
 }
 
@@ -486,6 +577,17 @@ function requiredHttpUrl(value: string, field: string): string {
 /* Row → domain mappers                                                */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Whether a row's export selected both image credit fields. Without either
+ * field the record serves no image; a null credit value still serves one.
+ */
+function creditsSelected(row: {
+  main_image_copyright?: string | null;
+  main_image_author?: string | null;
+}): boolean {
+  return row.main_image_copyright !== undefined && row.main_image_author !== undefined;
+}
+
 /** Maps a validated `whc001` row to a site. */
 export function toHeritageSite(row: WhcRow): { site: HeritageSite; componentParts: number } {
   const justification = cleanOptional(row.justification_en);
@@ -497,13 +599,20 @@ export function toHeritageSite(row: WhcRow): { site: HeritageSite; componentPart
   const secondary = yearsIn(row.secondary_dates).slice(1);
   const dangerYear = row.danger_list ? Number(row.danger_list.slice(2)) : undefined;
   const names = {
-    ...optionalName('fr', row.name_fr),
-    ...optionalName('es', row.name_es),
-    ...optionalName('ru', row.name_ru),
-    ...optionalName('ar', row.name_ar),
-    ...optionalName('zh', row.name_zh),
+    ...optionalText('fr', row.name_fr),
+    ...optionalText('es', row.name_es),
+    ...optionalText('ru', row.name_ru),
+    ...optionalText('ar', row.name_ar),
+    ...optionalText('zh', row.name_zh),
   };
-  const imageUrl = httpUrl(row.main_image_url);
+  const translations = {
+    ...optionalText('fr', row.short_description_fr),
+    ...optionalText('es', row.short_description_es),
+    ...optionalText('ru', row.short_description_ru),
+    ...optionalText('ar', row.short_description_ar),
+    ...optionalText('zh', row.short_description_zh),
+  };
+  const imageUrl = creditsSelected(row) ? httpUrl(row.main_image_url) : undefined;
   const copyright = cleanOptional(row.main_image_copyright);
   const author = cleanOptional(row.main_image_author);
   const site: HeritageSite = {
@@ -529,6 +638,7 @@ export function toHeritageSite(row: WhcRow): { site: HeritageSite; componentPart
     ...(row.area_hectares !== null ? { area_hectares: row.area_hectares } : {}),
     ...(row.coordinates ? { latitude: row.coordinates.lat, longitude: row.coordinates.lon } : {}),
     ...(description ? { description } : {}),
+    description_translations: translations,
     ...(justification ? { justification } : {}),
     components,
     components_total: row.components_count,
@@ -546,14 +656,18 @@ export function toHeritageSite(row: WhcRow): { site: HeritageSite; componentPart
   return { site, componentParts: parts };
 }
 
-function optionalName<K extends string>(key: K, value: string | null): Partial<Record<K, string>> {
+/** `{ [key]: cleaned value }`, or `{}` when the value is absent, null, or blank after cleanup. */
+function optionalText<K extends string>(
+  key: K,
+  value: string | null | undefined,
+): Partial<Record<K, string>> {
   const cleaned = cleanOptional(value);
   return cleaned ? ({ [key]: cleaned } as Partial<Record<K, string>>) : {};
 }
 
 /** Maps a validated `ich001` row to an element. */
 export function toIntangibleElement(row: IchRow): IntangibleElement {
-  const imageUrl = httpUrl(row.main_image_url);
+  const imageUrl = creditsSelected(row) ? httpUrl(row.main_image_url) : undefined;
   const caption = cleanOptional(row.main_image_caption_en);
   const copyright = cleanOptional(row.main_image_copyright);
   const author = cleanOptional(row.main_image_author);
@@ -567,6 +681,7 @@ export function toIntangibleElement(row: IchRow): IntangibleElement {
     multinational: row.countries.length > 1,
     inscribed_year: Number(row.inscription_year),
     description: cleanText(row.description_en),
+    description_translations: optionalText('fr', row.description_fr),
     concepts: (row.concepts_primary_names ?? []).map(cleanText).filter(Boolean),
     concepts_secondary: (row.concepts_secondary_names ?? []).map(cleanText).filter(Boolean),
     world_heritage_sites: parseWhcSites(row.whc_sites),

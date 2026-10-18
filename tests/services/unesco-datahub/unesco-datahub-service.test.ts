@@ -1,10 +1,11 @@
 /**
  * @fileoverview Tests for the snapshot lifecycle of UnescoDataHubService,
- * driven through its `get` and `now` seams: lazy load, request allowlist,
- * single-flight, TTL with stale-while-revalidate, failure backoff, strict row
- * validation, the row-count retry, the body budgets and text bounds, the
- * license check, and upstream failure classes (non-2xx, malformed body,
- * timeout, rate limit, network error).
+ * driven through its `get` and `now` seams: lazy load, request allowlist and
+ * its intersection with the metadata `fields`, single-flight, TTL with
+ * stale-while-revalidate, failure backoff, strict row validation, the
+ * row-count retry, the body budgets and text bounds, the license check, and
+ * upstream failure classes (retryable transport failures; non-retryable
+ * rejections and unusable exports).
  * @module tests/services/unesco-datahub/unesco-datahub-service.test
  */
 
@@ -12,23 +13,37 @@ import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { logger } from '@cyanheads/mcp-ts-core/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EG_FIELDS, WHC_FIELDS } from '@/services/unesco-datahub/rows.js';
+import { EG_FIELDS, ICH_FIELDS, MAB_FIELDS, WHC_FIELDS } from '@/services/unesco-datahub/rows.js';
 import {
   getUnescoDataHubService,
   initUnescoDataHubService,
   sourceOf,
   UnescoDataHubService,
 } from '@/services/unesco-datahub/unesco-datahub-service.js';
+import type { DatasetId } from '@/services/unesco-datahub/vocabulary.js';
+import { rejectionFrom } from '../../fixtures/failures.js';
 import {
   BASE_URL,
   createHub,
   DATA_AS_OF,
+  DEFAULT_FIELDS,
   type FakeHub,
+  fieldsWithout,
   type HubOptions,
   httpFailure,
   metaDocument,
+  transientFailure,
+  withoutKeys,
 } from '../../fixtures/hub.js';
-import { EG_ROWS, egRow, ICH_ROWS, MAB_ROWS, WHC_ROWS, whcRow } from '../../fixtures/rows.js';
+import {
+  EG_ROWS,
+  egRow,
+  ICH_ROWS,
+  MAB_ROWS,
+  mabRow,
+  WHC_ROWS,
+  whcRow,
+} from '../../fixtures/rows.js';
 
 const services: UnescoDataHubService[] = [];
 let clock = 0;
@@ -48,6 +63,17 @@ function makeService(
 }
 
 const ctx = () => createMockContext();
+
+/** Loads one dataset's snapshot through its public getter. */
+function load(service: UnescoDataHubService, dataset: DatasetId): Promise<unknown> {
+  const getters = {
+    whc001: () => service.getHeritage(ctx()),
+    ich001: () => service.getIntangible(ctx()),
+    mab001: () => service.getBiosphere(ctx()),
+    eg0001: () => service.getGeoparks(ctx()),
+  };
+  return getters[dataset]();
+}
 
 /** Runs a rejecting call to completion under fake timers and returns what it rejected with. */
 async function rejectionOf(promise: Promise<unknown>, advanceMs = 10_000): Promise<McpError> {
@@ -343,43 +369,44 @@ describe('TTL and stale-while-revalidate', () => {
 });
 
 describe('first-load failures', () => {
-  it('throws ServiceUnavailable with reason, dataset, retryAfter, and the cause', async () => {
-    const { service } = makeService({ intercept: () => httpFailure(404) });
-    const error = await service.getHeritage(ctx()).catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(McpError);
-    const mcp = error as McpError;
+  it('throws ServiceUnavailable with reason, retryable, dataset, retryAfter, and the cause', async () => {
+    const { service } = makeService({ intercept: () => transientFailure() });
+    const mcp = await rejectionFrom(service.getHeritage(ctx()));
     expect(mcp.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
-    expect(mcp.data).toMatchObject({
+    expect(mcp.data).toEqual({
       reason: 'snapshot_unavailable',
+      retryable: true,
       dataset: 'whc001',
       retryAfter: 60,
     });
-    expect(mcp.message).toContain('World Heritage List');
+    expect(mcp.message).toBe(
+      'The UNESCO Data Hub could not be reached to load the World Heritage List (whc001); the next load attempt is allowed in 60 s.',
+    );
     expect(mcp.cause).toBeInstanceOf(McpError);
-    expect((mcp.cause as McpError).code).toBe(JsonRpcErrorCode.NotFound);
+    expect((mcp.cause as McpError).code).toBe(JsonRpcErrorCode.ServiceUnavailable);
   });
 
   it('fails fast without re-fetching until the backoff elapses, with a shrinking retryAfter', async () => {
-    const { hub, service } = makeService({ intercept: () => httpFailure(404) });
-    await service.getHeritage(ctx()).catch(() => undefined);
+    const { hub, service } = makeService({ intercept: () => transientFailure() });
+    await rejectionFrom(service.getHeritage(ctx()));
     const afterFirst = hub.calls.length;
 
     clock += 20_000;
-    const early = (await service.getHeritage(ctx()).catch((e: unknown) => e)) as McpError;
+    const early = await rejectionFrom(service.getHeritage(ctx()));
     expect(early.data).toMatchObject({ reason: 'snapshot_unavailable', retryAfter: 40 });
     expect(hub.calls).toHaveLength(afterFirst);
 
     clock += 40_000;
-    const second = (await service.getHeritage(ctx()).catch((e: unknown) => e)) as McpError;
+    const second = await rejectionFrom(service.getHeritage(ctx()));
     expect(hub.calls.length).toBeGreaterThan(afterFirst);
     expect(second.data).toMatchObject({ retryAfter: 120 });
   });
 
   it('doubles the wait per failure up to one hour', async () => {
-    const { service } = makeService({ intercept: () => httpFailure(404) });
+    const { service } = makeService({ intercept: () => transientFailure() });
     const waits: number[] = [];
     for (let i = 0; i < 9; i += 1) {
-      const error = (await service.getHeritage(ctx()).catch((e: unknown) => e)) as McpError;
+      const error = await rejectionFrom(service.getHeritage(ctx()));
       const retryAfter = (error.data as { retryAfter: number }).retryAfter;
       waits.push(retryAfter);
       clock += retryAfter * 1000;
@@ -415,6 +442,426 @@ describe('first-load failures', () => {
     ]);
     expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected']);
     expect(hub.callsFor('whc001', 'meta')).toHaveLength(1);
+  });
+});
+
+const TITLES: Readonly<Record<DatasetId, string>> = {
+  whc001: 'World Heritage List',
+  ich001: 'Intangible Heritage List',
+  mab001: 'Man and the Biosphere Programme',
+  eg0001: 'UNESCO Global Geoparks',
+};
+
+/**
+ * Asserts the non-retryable `snapshot_unavailable` envelope: no `retryAfter`,
+ * a message that names the dataset without "could not be reached", and the
+ * service's own recovery, which does not say to wait.
+ */
+function expectRejectedLoad(error: McpError, dataset: DatasetId): void {
+  expect(error).toBeInstanceOf(McpError);
+  expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+  expect(error.data).toMatchObject({ reason: 'snapshot_unavailable', retryable: false, dataset });
+  expect(error.data).not.toHaveProperty('retryAfter');
+  expect(
+    error.message.startsWith(
+      `The ${TITLES[dataset]} (${dataset}) could not be loaded from the UNESCO Data Hub: `,
+    ),
+  ).toBe(true);
+  expect(error.message).not.toContain('could not be reached');
+  const hint = (error.data as { recovery?: { hint?: unknown } }).recovery?.hint;
+  expect(hint).toEqual(expect.any(String));
+  expect(hint).toContain(TITLES[dataset]);
+  expect(hint).not.toMatch(/\bwait\b/i);
+}
+
+/** The whole message of a non-retryable `snapshot_unavailable`, ending in `detail`. */
+const rejectedMessage = (dataset: DatasetId, detail: string) =>
+  `The ${TITLES[dataset]} (${dataset}) could not be loaded from the UNESCO Data Hub: ${detail}.`;
+
+const CHECKS_FAILED = "the data failed one of this server's checks (license, size, or row format)";
+
+describe('first-load failure classes', () => {
+  it.each<[string, DatasetId, HubOptions, string]>([
+    ['a 400', 'mab001', { intercept: () => httpFailure(400) }, 'the Data Hub answered HTTP 400'],
+    ['a 403', 'whc001', { intercept: () => httpFailure(403) }, 'the Data Hub answered HTTP 403'],
+    [
+      'a 404 on the export',
+      'whc001',
+      { intercept: (call) => (call.kind === 'export' ? httpFailure(404) : undefined) },
+      'the Data Hub answered HTTP 404',
+    ],
+    ['a 410', 'ich001', { intercept: () => httpFailure(410) }, 'the Data Hub answered HTTP 410'],
+    ['a 422', 'eg0001', { intercept: () => httpFailure(422) }, 'the Data Hub answered HTTP 422'],
+    ['a 501', 'whc001', { intercept: () => httpFailure(501) }, 'the Data Hub answered HTTP 501'],
+    [
+      'a row that fails its schema',
+      'whc001',
+      { rows: { whc001: [whcRow({ category: 'Hybrid' })] } },
+      CHECKS_FAILED,
+    ],
+    [
+      'a row its mapper refuses',
+      'mab001',
+      { rows: { mab001: [mabRow({ regional_group: 'Atlantis' })] } },
+      CHECKS_FAILED,
+    ],
+    [
+      'a duplicate record id',
+      'ich001',
+      { rows: { ich001: [...ICH_ROWS, ICH_ROWS[0]] } },
+      CHECKS_FAILED,
+    ],
+    [
+      'a changed license',
+      'eg0001',
+      { metas: { eg0001: { license: 'Proprietary Terms' } } },
+      CHECKS_FAILED,
+    ],
+    [
+      'metadata that no longer lists a required field',
+      'whc001',
+      { fields: { whc001: fieldsWithout('whc001', ['name_en']) } },
+      'the dataset no longer has the field name_en this server requires',
+    ],
+  ])(
+    'reports %s as non-retryable, naming what failed without upstream text',
+    async (_label, dataset, hubOptions, detail) => {
+      const { hub, service } = makeService(hubOptions);
+      const error = await rejectionFrom(load(service, dataset));
+      expectRejectedLoad(error, dataset);
+      expect(error.message).toBe(rejectedMessage(dataset, detail));
+      expect(error.cause).toBeInstanceOf(McpError);
+      expect(hub.callsFor(dataset, 'meta')).toHaveLength(1);
+    },
+  );
+
+  describe('transport failures (retry ladder under fake timers)', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+      });
+    });
+
+    it.each<[string, NonNullable<HubOptions['intercept']>]>([
+      [
+        'a network error',
+        () => {
+          throw new TypeError('fetch failed');
+        },
+      ],
+      [
+        'a timeout',
+        () => {
+          throw new McpError(JsonRpcErrorCode.Timeout, 'The request timed out.');
+        },
+      ],
+      ...[408, 425, 429, 500, 502, 503, 504].map(
+        (status): [string, NonNullable<HubOptions['intercept']>] => [
+          `a ${status}`,
+          () => httpFailure(status),
+        ],
+      ),
+      ['a 503 with a long Retry-After', () => transientFailure()],
+      [
+        'a non-JSON 200',
+        (call) => (call.kind === 'export' ? new Response('<html>busy</html>') : undefined),
+      ],
+      [
+        'metadata of the wrong shape',
+        (call) => (call.kind === 'meta' ? Response.json({ nope: true }) : undefined),
+      ],
+      [
+        'metadata with no fields list',
+        (call) =>
+          call.kind === 'meta'
+            ? Response.json({ ...(metaDocument('whc001') as object), fields: undefined })
+            : undefined,
+      ],
+    ])(
+      'keeps %s retryable, with retryAfter and the unreachable message',
+      async (_label, intercept) => {
+        const { service } = makeService({ intercept });
+        const error = await rejectionOf(service.getHeritage(ctx()), 60_000);
+        expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+        expect(error.data).toEqual({
+          reason: 'snapshot_unavailable',
+          retryable: true,
+          dataset: 'whc001',
+          retryAfter: expect.any(Number),
+        });
+        expect(error.message).toMatch(
+          /^The UNESCO Data Hub could not be reached to load the World Heritage List \(whc001\); the next load attempt is allowed in \d+ s\.$/,
+        );
+      },
+    );
+  });
+
+  it('keeps the reload backoff for a rejected load, then recovers once the Data Hub accepts the request', async () => {
+    let rejecting = true;
+    const { hub, service } = makeService({
+      intercept: () => (rejecting ? httpFailure(404) : undefined),
+    });
+    const metaCalls = () => hub.callsFor('whc001', 'meta').length;
+    const rejected = async () =>
+      expectRejectedLoad(await rejectionFrom(service.getHeritage(ctx())), 'whc001');
+
+    await rejected();
+    expect(metaCalls()).toBe(1);
+    clock += 59_999;
+    await rejected();
+    expect(metaCalls()).toBe(1);
+    clock += 1;
+    await rejected();
+    expect(metaCalls()).toBe(2);
+    clock += 119_999;
+    await rejected();
+    expect(metaCalls()).toBe(2);
+
+    rejecting = false;
+    clock += 1;
+    await expect(service.getHeritage(ctx())).resolves.toMatchObject({ dataset: 'whc001' });
+    expect(metaCalls()).toBe(3);
+  });
+});
+
+describe('metadata fields and the export select', () => {
+  const selectOf = (hub: FakeHub, dataset: DatasetId) =>
+    new URL(hub.callsFor(dataset, 'export')[0]?.url ?? '').searchParams.get('select')?.split(',');
+  const warningsNaming = (warning: { mock: { calls: unknown[][] } }, field: string) =>
+    warning.mock.calls.filter((c) => String(c[0]).includes(field));
+
+  it.each<[string, (fields: readonly string[]) => readonly string[]]>([
+    ['in allowlist order', (fields) => fields],
+    ['in reverse order', (fields) => [...fields].reverse()],
+  ])(
+    'selects every allowlisted field the metadata lists, in allowlist order and no other, from metadata %s',
+    async (_label, order) => {
+      const warning = vi.spyOn(logger, 'warning');
+      const { hub, service } = makeService({
+        fields: {
+          whc001: order(DEFAULT_FIELDS.whc001),
+          ich001: order(DEFAULT_FIELDS.ich001),
+          mab001: order(DEFAULT_FIELDS.mab001),
+          eg0001: order(DEFAULT_FIELDS.eg0001),
+        },
+      });
+      await Promise.all([
+        service.getHeritage(ctx()),
+        service.getIntangible(ctx()),
+        service.getBiosphere(ctx()),
+        service.getGeoparks(ctx()),
+      ]);
+      expect(selectOf(hub, 'whc001')).toEqual([...WHC_FIELDS]);
+      expect(selectOf(hub, 'ich001')).toEqual([...ICH_FIELDS]);
+      expect(selectOf(hub, 'mab001')).toEqual([...MAB_FIELDS]);
+      expect(selectOf(hub, 'eg0001')).toEqual([...EG_FIELDS]);
+      expect(warningsNaming(warning, 'no longer lists')).toHaveLength(0);
+      expect(hub.calls).toHaveLength(8);
+    },
+  );
+
+  it.each<['mab001' | 'eg0001', readonly string[]]>([
+    ['mab001', MAB_FIELDS],
+    ['eg0001', EG_FIELDS],
+  ])(
+    '%s leaves out a dropped website, reads it as absent, and logs one warning naming it',
+    async (dataset, fields) => {
+      const warning = vi.spyOn(logger, 'warning');
+      const rows = dataset === 'mab001' ? MAB_ROWS : EG_ROWS;
+      const { hub, service } = makeService({
+        fields: { [dataset]: fieldsWithout(dataset, ['website']) },
+        rows: { [dataset]: withoutKeys(rows, ['website']) },
+      });
+      const snapshot = (await load(service, dataset)) as { records: object[] };
+      expect(selectOf(hub, dataset)).toEqual(fields.filter((f) => f !== 'website'));
+      expect(snapshot.records).toHaveLength(rows.length);
+      for (const record of snapshot.records) expect(record).not.toHaveProperty('website');
+      const named = warningsNaming(warning, 'website');
+      expect(named).toHaveLength(1);
+      expect(String(named[0]?.[0])).toContain(dataset);
+      expect(named[0]?.[1]).toMatchObject({ extra: { omittedFields: ['website'] } });
+    },
+  );
+
+  it('serves no site image without a credit field, and serves them again when the field returns', async () => {
+    const TTL = 5_000;
+    const hubOptions: HubOptions = {
+      fields: { whc001: fieldsWithout('whc001', ['main_image_author']) },
+      rows: { whc001: withoutKeys(WHC_ROWS, ['main_image_author']) },
+    };
+    const { hub, service } = makeService(hubOptions, TTL);
+    const snapshot = await service.getHeritage(ctx());
+    expect(selectOf(hub, 'whc001')).not.toContain('main_image_author');
+    expect(selectOf(hub, 'whc001')).toContain('main_image_copyright');
+    expect(snapshot.records).toHaveLength(WHC_ROWS.length);
+    for (const site of snapshot.records) expect(site).not.toHaveProperty('image');
+
+    hubOptions.fields = {};
+    hubOptions.rows = {};
+    clock += TTL;
+    expect(await service.getHeritage(ctx())).toBe(snapshot);
+    await vi.waitFor(async () =>
+      expect((await service.getHeritage(ctx())).byId.get('101')?.image).toMatchObject({
+        author: expect.any(String),
+      }),
+    );
+    expect(hub.callsFor('whc001', 'export')).toHaveLength(2);
+  });
+
+  it('loads the intangible list without images when its caption and credit fields are dropped', async () => {
+    const warning = vi.spyOn(logger, 'warning');
+    const dropped = ['main_image_caption_en', 'main_image_copyright', 'main_image_author'];
+    const { hub, service } = makeService({
+      fields: { ich001: fieldsWithout('ich001', dropped) },
+      rows: { ich001: withoutKeys(ICH_ROWS, dropped) },
+    });
+    const snapshot = await service.getIntangible(ctx());
+    expect(selectOf(hub, 'ich001')).toEqual(ICH_FIELDS.filter((f) => !dropped.includes(f)));
+    expect(snapshot.records).toHaveLength(ICH_ROWS.length);
+    for (const element of snapshot.records) expect(element).not.toHaveProperty('image');
+    const named = warningsNaming(warning, 'main_image_caption_en');
+    expect(named).toHaveLength(1);
+    expect(named[0]?.[1]).toMatchObject({ extra: { omittedFields: dropped } });
+  });
+
+  it('serves credited, uncaptioned images when only the caption field is dropped', async () => {
+    const full = (await makeService().service.getIntangible(ctx())).byId.get('1001')?.image;
+    expect(full).toHaveProperty('caption');
+    const { service } = makeService({
+      fields: { ich001: fieldsWithout('ich001', ['main_image_caption_en']) },
+      rows: { ich001: withoutKeys(ICH_ROWS, ['main_image_caption_en']) },
+    });
+    const { caption: _caption, ...uncaptioned } = full ?? {};
+    expect((await service.getIntangible(ctx())).byId.get('1001')?.image).toEqual(uncaptioned);
+  });
+
+  it('loads the sites with every translation unpublished when the metadata drops the translation columns', async () => {
+    const warning = vi.spyOn(logger, 'warning');
+    const dropped = [
+      'short_description_fr',
+      'short_description_es',
+      'short_description_ru',
+      'short_description_ar',
+      'short_description_zh',
+    ];
+    const full = (await makeService().service.getHeritage(ctx())).byId.get('101');
+    expect(Object.keys(full?.description_translations ?? {})).toEqual([
+      'fr',
+      'es',
+      'ru',
+      'ar',
+      'zh',
+    ]);
+
+    const { hub, service } = makeService({
+      fields: { whc001: fieldsWithout('whc001', dropped) },
+      rows: { whc001: withoutKeys(WHC_ROWS, dropped) },
+    });
+    const snapshot = await service.getHeritage(ctx());
+    expect(selectOf(hub, 'whc001')).toEqual(WHC_FIELDS.filter((f) => !dropped.includes(f)));
+    expect(snapshot.records).toHaveLength(WHC_ROWS.length);
+    for (const site of snapshot.records) expect(site.description_translations).toEqual({});
+    expect(snapshot.byId.get('101')?.description).toBe(full?.description);
+    const named = warningsNaming(warning, 'short_description_fr');
+    expect(named).toHaveLength(1);
+    expect(named[0]?.[1]).toMatchObject({ extra: { omittedFields: dropped } });
+  });
+
+  it('loads the intangible list with French unpublished when the metadata drops description_fr', async () => {
+    const { hub, service } = makeService({
+      fields: { ich001: fieldsWithout('ich001', ['description_fr']) },
+      rows: { ich001: withoutKeys(ICH_ROWS, ['description_fr']) },
+    });
+    const snapshot = await service.getIntangible(ctx());
+    expect(selectOf(hub, 'ich001')).toEqual(ICH_FIELDS.filter((f) => f !== 'description_fr'));
+    expect(snapshot.records).toHaveLength(ICH_ROWS.length);
+    for (const element of snapshot.records) expect(element.description_translations).toEqual({});
+    expect(snapshot.byId.get('1001')?.description).toBe('First paragraph.\n\nSecond paragraph.');
+  });
+
+  it('keeps translations out of the keyword index', async () => {
+    const { service } = makeService();
+    const [heritage, intangible] = await Promise.all([
+      service.getHeritage(ctx()),
+      service.getIntangible(ctx()),
+    ]);
+    const index = (folded: readonly (readonly string[])[]) => folded.flat().join(' ');
+    expect(index(heritage.folded)).toContain(' walled');
+    expect(index(heritage.folded)).not.toContain('fortifiee');
+    expect(index(heritage.folded)).not.toContain('城墙');
+    expect(index(intangible.folded)).not.toContain('premier');
+  });
+
+  it('fails before the export GET when a required field is gone, naming it and not the optional one', async () => {
+    const { hub, service } = makeService({
+      fields: { mab001: fieldsWithout('mab001', ['url', 'website']) },
+    });
+    const error = await rejectionFrom(service.getBiosphere(ctx()));
+    expectRejectedLoad(error, 'mab001');
+    expect(error.message).toBe(
+      rejectedMessage('mab001', 'the dataset no longer has the field url this server requires'),
+    );
+    expect((error.cause as McpError).data).toMatchObject({
+      dataset: 'mab001',
+      missingFields: ['url'],
+      retryable: false,
+    });
+    expect(hub.callsFor('mab001', 'meta')).toHaveLength(1);
+    expect(hub.callsFor('mab001', 'export')).toHaveLength(0);
+  });
+
+  it('names every missing required field', async () => {
+    const { service } = makeService({
+      fields: { whc001: fieldsWithout('whc001', ['name_en', 'id_no', 'main_image_url']) },
+    });
+    const error = await rejectionFrom(service.getHeritage(ctx()));
+    expectRejectedLoad(error, 'whc001');
+    expect((error.cause as McpError).data).toMatchObject({ missingFields: ['id_no', 'name_en'] });
+    expect(error.message).toBe(
+      rejectedMessage(
+        'whc001',
+        'the dataset no longer has the fields id_no, name_en this server requires',
+      ),
+    );
+  });
+
+  it('still fails the strict row schema when the export carries a field the select left out', async () => {
+    const { service } = makeService({
+      fields: { mab001: fieldsWithout('mab001', ['website']) },
+    });
+    const error = await rejectionFrom(service.getBiosphere(ctx()));
+    expectRejectedLoad(error, 'mab001');
+    expect((error.cause as McpError).message).toContain('row 0 failed validation');
+  });
+
+  it('re-attempts after the backoff and loads once the metadata lists the field again', async () => {
+    const hubOptions: HubOptions = { fields: { mab001: fieldsWithout('mab001', ['url']) } };
+    const { hub, service } = makeService(hubOptions);
+    expectRejectedLoad(await rejectionFrom(service.getBiosphere(ctx())), 'mab001');
+    hubOptions.fields = {};
+    clock += 60_000;
+    await expect(service.getBiosphere(ctx())).resolves.toMatchObject({
+      dataset: 'mab001',
+      recordsCount: MAB_ROWS.length,
+    });
+    expect(selectOf(hub, 'mab001')).toEqual([...MAB_FIELDS]);
+  });
+
+  it('keeps the previous snapshot when a refresh finds a required field gone', async () => {
+    const TTL = 5_000;
+    const hubOptions: HubOptions = {};
+    const { hub, service } = makeService(hubOptions, TTL);
+    const first = await service.getBiosphere(ctx());
+    const warning = vi.spyOn(logger, 'warning');
+    hubOptions.fields = { mab001: fieldsWithout('mab001', ['url']) };
+    clock += TTL;
+    expect(await service.getBiosphere(ctx())).toBe(first);
+    await vi.waitFor(() =>
+      expect(warningsNaming(warning, 'serving the previous snapshot')).toHaveLength(1),
+    );
+    expect(await service.getBiosphere(ctx())).toBe(first);
+    expect(hub.callsFor('mab001', 'meta')).toHaveLength(2);
+    expect(hub.callsFor('mab001', 'export')).toHaveLength(1);
   });
 });
 
@@ -538,8 +985,8 @@ describe('body budgets and text bounds', () => {
     const { hub, service } = makeService({
       intercept: (call) => (call.kind === 'export' ? padded.response : undefined),
     });
-    const error = (await service.getHeritage(ctx()).catch((e: unknown) => e)) as McpError;
-    expect(error.data).toMatchObject({ reason: 'snapshot_unavailable', dataset: 'whc001' });
+    const error = await rejectionFrom(service.getHeritage(ctx()));
+    expectRejectedLoad(error, 'whc001');
     const cause = error.cause as McpError;
     expect(cause.message).toContain('64 MiB');
     expect(cause.data).toMatchObject({ dataset: 'whc001', retryable: false });
@@ -739,12 +1186,22 @@ describe('upstream failure classes (retry ladder under fake timers)', () => {
 
     clock += 60_000;
     await vi.advanceTimersByTimeAsync(60_000);
-    const held = (await service.getHeritage(ctx()).catch((e: unknown) => e)) as McpError;
-    expect(held.data).toMatchObject({ reason: 'snapshot_unavailable', retryAfter: 3540 });
+    const held = await rejectionFrom(service.getHeritage(ctx()));
+    expect(held.data).toMatchObject({
+      reason: 'snapshot_unavailable',
+      retryable: true,
+      retryAfter: 3540,
+    });
     expect(hub.calls).toHaveLength(1);
 
     const other = await rejectionOf(service.getIntangible(ctx()), 100);
-    expect(other.data).toMatchObject({ reason: 'snapshot_unavailable', dataset: 'ich001' });
+    expect(other.data).toMatchObject({
+      reason: 'snapshot_unavailable',
+      retryable: true,
+      dataset: 'ich001',
+    });
+    expect(other.message).toContain('could not be reached');
+    expect((other.cause as McpError).data).toMatchObject({ reason: 'pacer_shed' });
     expect((other.data as { retryAfter: number }).retryAfter).toBeGreaterThanOrEqual(3539);
     expect(hub.callsFor('ich001')).toHaveLength(0);
   });
@@ -945,20 +1402,13 @@ describe('UNESCO Global Geoparks (eg0001)', () => {
     expect((error.cause as McpError).message).toContain('duplicate record id ASJP91');
   });
 
-  it('reports a failed first load as snapshot_unavailable naming the dataset', async () => {
+  it('reports a rejected first load as non-retryable snapshot_unavailable naming the dataset', async () => {
     const { service } = makeService({
       intercept: (call) => (call.dataset === 'eg0001' ? httpFailure(404) : undefined),
     });
-    const error = (await service.getGeoparks(ctx()).catch((e: unknown) => e)) as McpError;
-    expect(error).toBeInstanceOf(McpError);
-    expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
-    expect(error.data).toMatchObject({
-      reason: 'snapshot_unavailable',
-      retryable: true,
-      dataset: 'eg0001',
-      retryAfter: 60,
-    });
-    expect(error.message).toContain('UNESCO Global Geoparks (eg0001)');
+    const error = await rejectionFrom(service.getGeoparks(ctx()));
+    expectRejectedLoad(error, 'eg0001');
+    expect(error.message).toBe(rejectedMessage('eg0001', 'the Data Hub answered HTTP 404'));
     expect((error.cause as McpError).code).toBe(JsonRpcErrorCode.NotFound);
     await expect(service.getHeritage(ctx())).resolves.toMatchObject({ dataset: 'whc001' });
     await expect(service.getIntangible(ctx())).resolves.toMatchObject({ dataset: 'ich001' });

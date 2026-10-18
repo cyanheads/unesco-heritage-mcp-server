@@ -1,31 +1,43 @@
 /**
  * @fileoverview unesco_get_intangible_heritage_element — one Intangible
- * Cultural Heritage element's full record by ich_ref: description, list,
- * countries, inscription year, UNESCO concept terms, linked World Heritage
- * sites, UNESCO page, and the main image credit.
+ * Cultural Heritage element's full record by ich_ref: description (English, or
+ * French on request, with an explicit English fallback), list, countries,
+ * inscription year, UNESCO concept terms, linked World Heritage sites, UNESCO
+ * page, and the main image credit.
  * @module mcp-server/tools/definitions/get-intangible-heritage-element.tool
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { renderSources, sourcesField } from '@/mcp-server/shared/enrichment.js';
-import { ichRefInput } from '@/mcp-server/shared/inputs.js';
+import {
+  descriptionLanguageFragment,
+  renderSources,
+  sourcesField,
+} from '@/mcp-server/shared/enrichment.js';
+import { descriptionLanguageInput, ichRefInput } from '@/mcp-server/shared/inputs.js';
 import { bareUrl, inline, quoted } from '@/mcp-server/shared/markdown.js';
 import { buildElementRecord } from '@/services/unesco-datahub/records.js';
 import {
   getUnescoDataHubService,
   sourceOf,
 } from '@/services/unesco-datahub/unesco-datahub-service.js';
-import { INTANGIBLE_LISTS } from '@/services/unesco-datahub/vocabulary.js';
+import {
+  ELEMENT_DESCRIPTION_LANGUAGES,
+  INTANGIBLE_LISTS,
+} from '@/services/unesco-datahub/vocabulary.js';
 
 export const getIntangibleHeritageElementTool = tool('unesco_get_intangible_heritage_element', {
   title: 'Get intangible heritage element',
   description:
-    "Fetch one Intangible Cultural Heritage element's full record by ich_ref: its description, the list it is inscribed on, the countries that share it, its inscription year, UNESCO concept terms, the World Heritage sites UNESCO links to it, its UNESCO page, and the main image with its caption and copyright credit.",
+    "Fetch one Intangible Cultural Heritage element's full record by ich_ref: its description, the list it is inscribed on, the countries that share it, its inscription year, UNESCO concept terms, the World Heritage sites UNESCO links to it, its UNESCO page, and the main image with its caption and copyright credit. description_language fr returns UNESCO's French description instead of the English one.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     ich_ref: ichRefInput(
       "The element's ich_ref, from unesco_search_intangible_heritage. A number, a digit string, or the element's ich.unesco.org/en/{RL|USL|Art18}/{ref} page URL.",
+    ),
+    description_language: descriptionLanguageInput(
+      ELEMENT_DESCRIPTION_LANGUAGES,
+      'Language of the description UNESCO publishes for the element: en or fr, in any case; UNESCO publishes element descriptions in no other language. Unset returns the English description. When UNESCO publishes none in French, the English one is returned with description_language en, and notice says so.',
     ),
   }),
   output: z.object({
@@ -51,7 +63,17 @@ export const getIntangibleHeritageElementTool = tool('unesco_get_intangible_heri
       .describe(
         'Inscription year. Elements dated 2008 were incorporated into the Representative List that year after an earlier proclamation.',
       ),
-    description: z.string().describe("UNESCO's description of the element."),
+    description: z
+      .string()
+      .describe(
+        "UNESCO's description of the element: in English, or in the language description_language names.",
+      ),
+    description_language: z
+      .enum(ELEMENT_DESCRIPTION_LANGUAGES)
+      .optional()
+      .describe(
+        'Language of description, present when the description_language input was set: the requested language, or en when UNESCO publishes no description in it.',
+      ),
     concepts: z
       .array(z.string().describe('Concept term.'))
       .describe('Primary UNESCO concept terms; empty for the few elements without any.'),
@@ -83,6 +105,10 @@ export const getIntangibleHeritageElementTool = tool('unesco_get_intangible_heri
   }),
   enrichment: {
     sources: sourcesField,
+    notice: z
+      .string()
+      .optional()
+      .describe('That the description is not in the requested description_language, and why.'),
   },
   enrichmentTrailer: {
     sources: { render: renderSources },
@@ -99,8 +125,7 @@ export const getIntangibleHeritageElementTool = tool('unesco_get_intangible_heri
     {
       reason: 'snapshot_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'No intangible heritage snapshot has loaded yet and the Data Hub is unreachable',
-      retryable: true,
+      when: 'No intangible heritage snapshot has loaded yet: the Data Hub is unreachable, failing, or rate-limiting (retryable), or it rejected the request or served data this server cannot use (not retryable)',
       thrownBy: 'service',
       recovery:
         'The UNESCO Data Hub could not be reached to load the Intangible Heritage List; wait until the next load attempt this error names (retryAfter, in seconds), then call unesco_get_intangible_heritage_element again.',
@@ -118,8 +143,13 @@ export const getIntangibleHeritageElementTool = tool('unesco_get_intangible_heri
         { ich_ref: input.ich_ref },
       );
     }
+    const language = input.description_language;
+    const record = buildElementRecord(element, language);
+    const fallback =
+      language && descriptionLanguageFragment('element', language, record.description_language);
+    if (fallback) ctx.enrich.notice(fallback);
     ctx.log.info('Intangible heritage element fetched', { ich_ref: element.ich_ref });
-    return buildElementRecord(element);
+    return record;
   },
 
   format: (r) => {
@@ -136,7 +166,10 @@ export const getIntangibleHeritageElementTool = tool('unesco_get_intangible_heri
       `- **Multinational:** ${r.multinational ? 'Yes' : 'No'}`,
       `- **URL:** ${bareUrl(r.url)}`,
       '',
-      quoted('Description', r.description),
+      quoted(
+        r.description_language ? `Description (${r.description_language})` : 'Description',
+        r.description,
+      ),
       '',
       `**Concepts:** ${r.concepts.length > 0 ? r.concepts.map(inline).join(', ') : 'None recorded'}`,
       `**Secondary concepts:** ${r.concepts_secondary.length > 0 ? r.concepts_secondary.map(inline).join(', ') : 'None recorded'}`,

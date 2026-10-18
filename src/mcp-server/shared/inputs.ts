@@ -1,9 +1,12 @@
 /**
  * @fileoverview Shared input schemas and schema-level normalizers for the
- * unesco_* tools and resources: blank-as-unset wrapping, country, region,
- * year bounds, keyword query and filter, pagination, the search rows'
- * `include_description` switch, the `near` point, and the record-id
- * normalizers. Every normalization runs in the schema, before the validator.
+ * unesco_* tools and resources: blank-as-unset wrapping, country, region, the
+ * get tools' description language, year bounds, keyword query and filter,
+ * pagination, the output budgets (`limit`, `max_components`) and their clamp
+ * to a per-call cap, the search rows' `include_description` switch, the `near`
+ * point, and the record-id normalizers. Every normalization runs in the
+ * schema, before the validator; the clamp runs in the handler, on the parsed
+ * number.
  * @module mcp-server/shared/inputs
  */
 
@@ -53,6 +56,14 @@ export function regionInput(description: string) {
   );
 }
 
+/** A description language code from `languages`, any case; blank = unset (English, as recorded). */
+export function descriptionLanguageInput<const L extends readonly [string, ...string[]]>(
+  languages: L,
+  description: string,
+) {
+  return blankAsUnset(z.enum(languages).optional(), foldToEnum(languages)).describe(description);
+}
+
 /** An ISO 3166-1 alpha-2 or alpha-3 code, any case, normalized to alpha-2. */
 export function countryInput(description: string) {
   return blankAsUnset(z.string().max(64).optional(), normalizeCountry).describe(description);
@@ -90,8 +101,72 @@ export function queryInput(description: string, maxLength = 200) {
   ).describe(description);
 }
 
-export const limitInput = blankAsUnset(z.number().int().min(1).max(50).default(20)).describe(
-  'Maximum results per page (1–50, default 20).',
+/**
+ * The hard ceiling every output budget shares: a value above it is rejected,
+ * while one between the budget's per-call cap and here is clamped to the cap.
+ * It exceeds the largest dataset (1,273 World Heritage sites) and the parts one
+ * site's bounded component list can hold, so no real request reaches it.
+ */
+export const BUDGET_CEILING = 10_000;
+
+/**
+ * An output budget: a numeric input that sizes the response, never the match.
+ * A request above `cap` is served at the cap, and the response says so.
+ */
+export interface OutputBudget {
+  /** The most one call serves. */
+  readonly cap: number;
+  /** Completes the clamp fragment: what the cap means for this response. */
+  readonly consequence: string;
+  /** The input's name, as the clamp fragment names it. */
+  readonly name: string;
+}
+
+/** A budget after clamping. */
+export interface ClampedBudget {
+  /** The value served: the request, or the cap when the request exceeds it. */
+  readonly applied: number;
+  /** Present when the request exceeded the cap: the fragment that leads `notice`. */
+  readonly fragment?: string;
+}
+
+const PAGE_CAP = 50;
+const COMPONENTS_CAP = 1000;
+
+/** The searches' `limit`: a page holds at most 50 results. */
+export const LIMIT_BUDGET: OutputBudget = {
+  name: 'limit',
+  cap: PAGE_CAP,
+  consequence: `this page holds at most ${PAGE_CAP} results`,
+};
+
+/** `unesco_get_site`'s `max_components`: one call lists at most 1000 components. */
+export const COMPONENTS_BUDGET: OutputBudget = {
+  name: 'max_components',
+  cap: COMPONENTS_CAP,
+  consequence: `at most ${COMPONENTS_CAP} components are listed`,
+};
+
+/** An output budget's schema: an integer from `min` to {@link BUDGET_CEILING}; blank = the default. */
+export function budgetInput(min: number, defaultValue: number, description: string) {
+  return blankAsUnset(z.number().int().min(min).max(BUDGET_CEILING).default(defaultValue)).describe(
+    description,
+  );
+}
+
+/** Clamps a parsed budget value to its per-call cap, with the fragment that discloses a clamp. */
+export function clampBudget(budget: OutputBudget, requested: number): ClampedBudget {
+  if (requested <= budget.cap) return { applied: requested };
+  return {
+    applied: budget.cap,
+    fragment: `${budget.name} ${requested} is above the per-call cap of ${budget.cap}, so ${budget.consequence}.`,
+  };
+}
+
+export const limitInput = budgetInput(
+  1,
+  20,
+  `Maximum results per page (default 20). A page holds at most ${PAGE_CAP}: a larger limit, up to ${BUDGET_CEILING}, is served as ${PAGE_CAP} and notice says so.`,
 );
 
 export const cursorInput = blankAsUnset(z.string().max(1024).optional()).describe(

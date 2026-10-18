@@ -5,7 +5,9 @@
  * `unesco_get_intangible_heritage_element`, `unesco_get_biosphere_reserve`, and
  * `unesco_get_geopark` payloads from loaded records. Each builder names the
  * payload's fields explicitly, so the resources (which serialize the builder's
- * return as-is) never carry loader-internal fields.
+ * return as-is) never carry loader-internal fields. The site and element
+ * builders take an optional description language; without one they return the
+ * English description, as the resources do.
  * @module services/unesco-datahub/records
  */
 
@@ -16,7 +18,27 @@ import type {
   IntangibleElement,
   SiteComponent,
 } from './types.js';
-import { CRITERIA, type CriterionCode } from './vocabulary.js';
+import {
+  CRITERIA,
+  type CriterionCode,
+  type ElementDescriptionLanguage,
+  type SiteDescriptionLanguage,
+} from './vocabulary.js';
+
+/**
+ * The description fields of a record read in `language`: the text UNESCO
+ * publishes in that language, else the English text, each labelled with the
+ * language it is in; neither field when there is no text in either.
+ */
+function describedIn<L extends SiteDescriptionLanguage>(
+  language: L,
+  english: string | undefined,
+  translations: Partial<Record<SiteDescriptionLanguage, string>>,
+): { description?: string; description_language?: L | 'en' } {
+  const text = language === 'en' ? english : translations[language];
+  if (text !== undefined) return { description: text, description_language: language };
+  return english === undefined ? {} : { description: english, description_language: 'en' };
+}
 
 /** The `unesco_get_site` payload. */
 export interface SiteRecord {
@@ -29,6 +51,8 @@ export interface SiteRecord {
   criteria: { code: CriterionCode; meaning: string; source: 'recorded' | 'inferred' }[];
   danger_listed_year?: number;
   description?: string;
+  /** The language of `description`; set only when a language was requested and a description is returned. */
+  description_language?: SiteDescriptionLanguage;
   id_no: string;
   image?: { url: string; copyright?: string; author?: string };
   in_danger: boolean;
@@ -50,11 +74,19 @@ export function sitePageUrl(idNo: string): string {
   return `https://whc.unesco.org/en/list/${idNo}/`;
 }
 
-/** Builds the full site record, listing at most `maxComponents` parsed components. */
-export function buildSiteRecord(site: HeritageSite, maxComponents: number): SiteRecord {
-  const { components, criteria_inferred, criteria, ...rest } = site;
+/**
+ * Builds the full site record, listing at most `maxComponents` parsed
+ * components, with the description in `language` when one is given.
+ */
+export function buildSiteRecord(
+  site: HeritageSite,
+  maxComponents: number,
+  language?: SiteDescriptionLanguage,
+): SiteRecord {
+  const { components, criteria_inferred, criteria, description_translations, ...rest } = site;
   return {
     ...rest,
+    ...(language ? describedIn(language, site.description, description_translations) : {}),
     criteria: criteria.map((code) => ({
       code,
       meaning: CRITERIA[code].meaning,
@@ -82,10 +114,16 @@ export type ElementRecord = Pick<
   | 'world_heritage_sites'
   | 'url'
   | 'image'
->;
+> & {
+  /** The language of `description`; set only when a language was requested. */
+  description_language?: ElementDescriptionLanguage;
+};
 
-/** Builds the full intangible heritage element record. */
-export function buildElementRecord(e: IntangibleElement): ElementRecord {
+/** Builds the full intangible heritage element record, with the description in `language` when one is given. */
+export function buildElementRecord(
+  e: IntangibleElement,
+  language?: ElementDescriptionLanguage,
+): ElementRecord {
   return {
     ich_ref: e.ich_ref,
     name: e.name,
@@ -96,6 +134,7 @@ export function buildElementRecord(e: IntangibleElement): ElementRecord {
     multinational: e.multinational,
     inscribed_year: e.inscribed_year,
     description: e.description,
+    ...(language ? describedIn(language, e.description, e.description_translations) : {}),
     concepts: e.concepts,
     concepts_secondary: e.concepts_secondary,
     world_heritage_sites: e.world_heritage_sites,

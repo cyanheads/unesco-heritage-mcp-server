@@ -215,8 +215,7 @@ export const listReferenceTool = tool('unesco_list_reference', {
     {
       reason: 'snapshot_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'A dataset the topic reads has not loaded yet and the Data Hub is unreachable',
-      retryable: true,
+      when: 'A dataset the topic reads has not loaded yet: the Data Hub is unreachable, failing, or rate-limiting (retryable), or it rejected the request or served data this server cannot use (not retryable)',
       thrownBy: 'service',
       recovery:
         'The UNESCO Data Hub could not be reached to load a dataset this topic reads; wait until the next load attempt this error names (retryAfter, in seconds), then call unesco_list_reference again.',

@@ -1,11 +1,32 @@
 /**
- * @fileoverview Generated intangible heritage, biosphere reserve, and geopark
- * rows for pagination, sorting, and sparse-shape tests. Every name and text is
- * invented.
+ * @fileoverview Generated World Heritage, intangible heritage, biosphere
+ * reserve, and geopark rows for pagination, sorting, and sparse-shape tests.
+ * Every name and text is invented.
  * @module tests/fixtures/paging
  */
 
-import { egRow, ichRow, mabRow } from './rows.js';
+import { egRow, ichRow, mabRow, whcRow } from './rows.js';
+
+/**
+ * `count` single-point sites with ids 3001…, named `Loomvale Site NNN` so name
+ * order is id order, inscribed 1980–1999, each with no components.
+ */
+export function manyWhcRows(count: number): Record<string, unknown>[] {
+  return Array.from({ length: count }, (_, i) => {
+    const n = String(i + 1).padStart(3, '0');
+    return whcRow({
+      id_no: String(3001 + i),
+      name_en: `Loomvale Site ${n}`,
+      name_fr: `Site de Loomvale ${n}`,
+      short_description_en: `Synthetic site number ${i + 1}.`,
+      date_inscribed: String(1980 + (i % 20)),
+      secondary_dates: String(1980 + (i % 20)),
+      coordinates: { lon: 2, lat: 48 + i * 0.01 },
+      components_count: 0,
+      components_list: null,
+    });
+  });
+}
 
 const INTANGIBLE_LISTS = [
   'Representative List',

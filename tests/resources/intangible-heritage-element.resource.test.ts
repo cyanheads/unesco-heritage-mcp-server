@@ -12,8 +12,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { intangibleHeritageElementResource as resource } from '@/mcp-server/resources/definitions/intangible-heritage-element.resource.js';
 import { getIntangibleHeritageElementTool } from '@/mcp-server/tools/definitions/get-intangible-heritage-element.tool.js';
 import { declaredRecovery } from '../fixtures/contract.js';
-import { failureCases, settle, withFakeTimers } from '../fixtures/failures.js';
-import { httpFailure } from '../fixtures/hub.js';
+import {
+  contentFailureCases,
+  expectContentFailure,
+  rejectionFrom,
+  settleRejection,
+  transportFailureCases,
+  withFakeTimers,
+} from '../fixtures/failures.js';
+import { transientFailure } from '../fixtures/hub.js';
 import { readResource } from '../fixtures/resource.js';
 import { ICH_ROWS, ichRow } from '../fixtures/rows.js';
 import { disposeServiceAfterEach, structured, useHub } from '../fixtures/tool.js';
@@ -91,6 +98,21 @@ describe('unesco://intangible-heritage/{ich_ref} — record', () => {
     expect(Object.keys(record).sort()).toEqual(RECORD_KEYS);
   });
 
+  it('returns the English description, never the French one the element carries', async () => {
+    const record = await read('unesco://intangible-heritage/1001');
+    expect(record).toMatchObject({ description: 'First paragraph.\n\nSecond paragraph.' });
+    expect(record).not.toHaveProperty('description_language');
+    expect(record).not.toHaveProperty('description_translations');
+    expect(JSON.stringify(record)).not.toContain('Premier paragraphe');
+  });
+
+  it('names the tool parameter that returns the French description', () => {
+    expect(resource.description).toContain('English description');
+    expect(resource.description).toContain(
+      'unesco_get_intangible_heritage_element with description_language fr',
+    );
+  });
+
   it('keeps a sparse element sparse', async () => {
     const record = await read('unesco://intangible-heritage/1002');
     expect(record).toMatchObject({
@@ -162,7 +184,7 @@ describe('unesco://intangible-heritage/{ich_ref} — errors', () => {
   });
 
   it('snapshot_unavailable: ServiceUnavailable with dataset and retryAfter', async () => {
-    useHub({ intercept: () => httpFailure(404) });
+    useHub({ intercept: () => transientFailure() });
     await expect(read('unesco://intangible-heritage/1001')).rejects.toMatchObject({
       code: JsonRpcErrorCode.ServiceUnavailable,
       data: { reason: 'snapshot_unavailable', dataset: 'ich001', retryAfter: 60 },
@@ -178,16 +200,29 @@ describe('unesco://intangible-heritage/{ich_ref} — upstream failure classes', 
     vi.useRealTimers();
   });
 
-  it.each(failureCases('ich001', ICH_ROWS.length))(
-    'reports %s as snapshot_unavailable',
+  it.each(transportFailureCases('ich001', ICH_ROWS.length))(
+    'reports %s as retryable snapshot_unavailable',
     async (_label, intercept) => {
       withFakeTimers();
       useHub({ intercept });
-      const pending = read('unesco://intangible-heritage/1001').catch((e: unknown) => e);
-      expect(await settle(pending)).toMatchObject({
+      expect(await settleRejection(read('unesco://intangible-heritage/1001'))).toMatchObject({
         code: JsonRpcErrorCode.ServiceUnavailable,
-        data: { reason: 'snapshot_unavailable', dataset: 'ich001' },
+        data: { reason: 'snapshot_unavailable', retryable: true, dataset: 'ich001' },
       });
+    },
+  );
+
+  it.each(contentFailureCases('ich001'))(
+    'reports %s as non-retryable snapshot_unavailable with the service recovery',
+    async (_label, hub) => {
+      useHub(hub);
+      const error = await rejectionFrom(read('unesco://intangible-heritage/1001'));
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expectContentFailure(
+        error,
+        'ich001',
+        declaredRecovery(resource.errors, 'snapshot_unavailable'),
+      );
     },
   );
 

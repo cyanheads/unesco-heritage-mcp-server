@@ -47,6 +47,33 @@ describe('buildSiteRecord', () => {
     expect(record.criteria).toEqual([]);
   });
 
+  it('names exactly the payload fields, in the order the resource serializes them', () => {
+    expect(Object.keys(buildSiteRecord(site('101'), 20))).toEqual([
+      'id_no',
+      'name',
+      'names',
+      'category',
+      'states',
+      'country_codes',
+      'region',
+      'transboundary',
+      'inscribed_year',
+      'secondary_years',
+      'in_danger',
+      'area_hectares',
+      'latitude',
+      'longitude',
+      'description',
+      'justification',
+      'components_total',
+      'components_unparsed',
+      'image',
+      'criteria',
+      'components',
+      'url',
+    ]);
+  });
+
   it('carries the page URL and drops the internal criteria_inferred field', () => {
     const record = buildSiteRecord(site('101'), 20);
     expect(record.url).toBe('https://whc.unesco.org/en/list/101/');
@@ -78,8 +105,70 @@ describe('buildSiteRecord', () => {
 
   it('does not mutate the source site', () => {
     const source = site('101');
-    buildSiteRecord(source, 1);
+    buildSiteRecord(source, 1, 'fr');
     expect(source.components).toHaveLength(3);
     expect(source.criteria).toEqual(['ii', 'iv']);
+    expect(source.description).toBe('A synthetic walled town used as test data.');
+  });
+});
+
+describe('buildSiteRecord — description language', () => {
+  const fromRow = (overrides: Record<string, unknown>) =>
+    toHeritageSite(WhcRowSchema.parse(whcRow(overrides))).site;
+
+  it.each([
+    ['en', 'A synthetic walled town used as test data.'],
+    ['fr', 'Une ville fortifiée synthétique utilisée comme données de test.'],
+    ['es', 'Una ciudad amurallada sintética usada como datos de prueba.'],
+    ['ru', 'Синтетический город-крепость для тестовых данных.'],
+    ['ar', 'مدينة مسورة اصطناعية تستخدم كبيانات اختبار.'],
+    ['zh', '用作测试数据的合成城墙小镇。'],
+  ] as const)('returns the %s description and names its language', (language, text) => {
+    const record = buildSiteRecord(site('101'), 20, language);
+    expect(record.description).toBe(text);
+    expect(record.description_language).toBe(language);
+  });
+
+  it('falls back to the English description, labelled en, when the language is unpublished', () => {
+    const record = buildSiteRecord(site('102'), 20, 'zh');
+    expect(record.description).toBe('A synthetic forest shared by two states.');
+    expect(record.description_language).toBe('en');
+  });
+
+  it('returns neither field when there is no text in the language or in English', () => {
+    for (const language of ['fr', 'en'] as const) {
+      const record = buildSiteRecord(site('105'), 20, language);
+      expect(record).not.toHaveProperty('description');
+      expect(record).not.toHaveProperty('description_language');
+    }
+  });
+
+  it('returns a published translation when the English text is missing, and neither field for an unpublished one', () => {
+    const translatedOnly = fromRow({ short_description_en: null, short_description_es: 'Sólo.' });
+    expect(buildSiteRecord(translatedOnly, 20, 'es')).toMatchObject({
+      description: 'Sólo.',
+      description_language: 'es',
+    });
+    const none = buildSiteRecord(translatedOnly, 20, 'ru');
+    expect(none).not.toHaveProperty('description');
+    expect(none).not.toHaveProperty('description_language');
+  });
+
+  it('never carries the loaded translations, with or without a language', () => {
+    for (const language of [undefined, 'fr'] as const) {
+      expect(buildSiteRecord(site('101'), 20, language)).not.toHaveProperty(
+        'description_translations',
+      );
+    }
+  });
+
+  it('leaves every other field as the English call builds it', () => {
+    const { description: _en, ...english } = buildSiteRecord(site('101'), 20);
+    const {
+      description: _fr,
+      description_language: _language,
+      ...french
+    } = buildSiteRecord(site('101'), 20, 'fr');
+    expect(french).toEqual(english);
   });
 });

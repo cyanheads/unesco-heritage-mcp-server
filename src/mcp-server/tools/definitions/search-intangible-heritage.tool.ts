@@ -20,9 +20,11 @@ import {
 import {
   blankAsUnset,
   booleanInput,
+  clampBudget,
   countryInput,
   cursorInput,
   foldToEnum,
+  LIMIT_BUDGET,
   limitInput,
   MAX_QUERY_WORDS,
   optionalIdNoInput,
@@ -159,7 +161,9 @@ const AppliedFiltersSchema = z
     inscribed_from: z.number().optional().describe('Earliest inscription year.'),
     inscribed_to: z.number().optional().describe('Latest inscription year.'),
     sort: z.enum(SORTS).describe('The sort applied (resolved default when none was given).'),
-    limit: z.number().describe('Page size.'),
+    limit: z
+      .number()
+      .describe(`Page size applied: limit, or ${LIMIT_BUDGET.cap} when limit was larger.`),
   })
   .describe('The filters and sort as the server applied them.');
 type AppliedFilters = z.infer<typeof AppliedFiltersSchema>;
@@ -251,7 +255,7 @@ export const searchIntangibleHeritageTool = tool('unesco_search_intangible_herit
     {
       reason: 'invalid_cursor',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'cursor is malformed, or its offset or limit is not a non-negative whole number',
+      when: 'cursor is malformed, or its offset is not a non-negative whole number or its limit not a positive one',
       severity: 'notice',
       thrownBy: 'service',
       recovery:
@@ -260,8 +264,7 @@ export const searchIntangibleHeritageTool = tool('unesco_search_intangible_herit
     {
       reason: 'snapshot_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'No intangible heritage snapshot has loaded yet and the Data Hub is unreachable',
-      retryable: true,
+      when: 'No intangible heritage snapshot has loaded yet: the Data Hub is unreachable, failing, or rate-limiting (retryable), or it rejected the request or served data this server cannot use (not retryable)',
       thrownBy: 'service',
       recovery:
         'The UNESCO Data Hub could not be reached to load the Intangible Heritage List; wait until the next load attempt this error names (retryAfter, in seconds), then call unesco_search_intangible_heritage again.',
@@ -299,6 +302,7 @@ export const searchIntangibleHeritageTool = tool('unesco_search_intangible_herit
       country = { code: input.country, name: countryDisplayName(input.country) };
     }
 
+    const limit = clampBudget(LIMIT_BUDGET, input.limit);
     const applied: AppliedFilters = {
       ...(input.query ? { query: input.query } : {}),
       ...(country ? { country } : {}),
@@ -308,7 +312,7 @@ export const searchIntangibleHeritageTool = tool('unesco_search_intangible_herit
       ...(input.inscribed_from !== undefined ? { inscribed_from: input.inscribed_from } : {}),
       ...(input.inscribed_to !== undefined ? { inscribed_to: input.inscribed_to } : {}),
       sort,
-      limit: input.limit,
+      limit: limit.applied,
     };
     const { limit: _limit, ...fingerprinted } = applied;
     const fp = fingerprint(fingerprinted);
@@ -361,9 +365,9 @@ export const searchIntangibleHeritageTool = tool('unesco_search_intangible_herit
 
     matched.sort(elementComparator(sort, records, tierOf));
     const page = matched
-      .slice(offset, offset + input.limit)
+      .slice(offset, offset + limit.applied)
       .map((i) => toRow(records[i] as IntangibleElement, tierOf[i]));
-    ctx.enrich({ truncated: false, shown: page.length, cap: input.limit });
+    ctx.enrich({ truncated: false, shown: page.length, cap: limit.applied });
 
     const fragments: string[] = [];
     if (total === 0) {
@@ -409,13 +413,19 @@ export const searchIntangibleHeritageTool = tool('unesco_search_intangible_herit
       );
     }
 
-    const { more, notice } = composePageNotice({ fragments, offset, shown: page.length, total });
+    const { more, notice } = composePageNotice({
+      fragments,
+      limit,
+      offset,
+      shown: page.length,
+      total,
+    });
     let next_cursor: string | undefined;
     if (more) {
-      ctx.enrich.truncated({ shown: page.length, cap: input.limit, guidance: notice });
+      ctx.enrich.truncated({ shown: page.length, cap: limit.applied, guidance: notice });
       next_cursor = makeCursor({
         offset: offset + page.length,
-        limit: input.limit,
+        limit: limit.applied,
         fp,
         asOf: intangible.asOf,
       });

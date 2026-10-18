@@ -39,7 +39,10 @@ export interface HeritageSite {
   /** The subset of `criteria` inferred from the statement of Outstanding Universal Value. */
   criteria_inferred: CriterionCode[];
   danger_listed_year?: number;
+  /** The English short description. */
   description?: string;
+  /** UNESCO's translations of the short description, each present when published. */
+  description_translations: { fr?: string; es?: string; ru?: string; ar?: string; zh?: string };
   id_no: string;
   image?: { url: string; copyright?: string; author?: string };
   in_danger: boolean;
@@ -64,7 +67,10 @@ export interface IntangibleElement {
   countries: string[];
   /** ISO 3166-1 alpha-2 codes as UNESCO lists them. */
   country_codes: string[];
+  /** The English description. */
   description: string;
+  /** UNESCO's French description, when published. */
+  description_translations: { fr?: string };
   ich_ref: string;
   image?: { url: string; caption?: string; copyright?: string; author?: string };
   inscribed_year: number;

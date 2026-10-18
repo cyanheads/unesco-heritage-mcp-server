@@ -20,10 +20,12 @@ import {
 import {
   blankAsUnset,
   booleanInput,
+  clampBudget,
   countryInput,
   cursorInput,
   foldToEnum,
   includeDescriptionInput,
+  LIMIT_BUDGET,
   limitInput,
   MAX_QUERY_WORDS,
   nearInput,
@@ -39,6 +41,7 @@ import {
   compareText,
   countBoolean,
   countInto,
+  displayDistanceKm,
   fingerprint,
   haversineKm,
   makeCursor,
@@ -107,7 +110,9 @@ const ReserveRow = z
     distance_km: z
       .number()
       .optional()
-      .describe('Distance from the near point in km (present when near is set).'),
+      .describe(
+        'Distance from the near point in km, rounded to 0.1 km and never above radius_km (present when near is set).',
+      ),
     matched_in: z
       .enum(MATCH_TIERS)
       .optional()
@@ -189,7 +194,9 @@ const AppliedFiltersSchema = z
       .optional()
       .describe('Distance filter.'),
     sort: z.enum(SORTS).describe('The sort applied (resolved default when none was given).'),
-    limit: z.number().describe('Page size.'),
+    limit: z
+      .number()
+      .describe(`Page size applied: limit, or ${LIMIT_BUDGET.cap} when limit was larger.`),
     include_description: z.boolean().describe('Whether rows carry their introduction.'),
   })
   .describe('The filters and sort as the server applied them.');
@@ -289,7 +296,7 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
     {
       reason: 'invalid_cursor',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'cursor is malformed, or its offset or limit is not a non-negative whole number',
+      when: 'cursor is malformed, or its offset is not a non-negative whole number or its limit not a positive one',
       severity: 'notice',
       thrownBy: 'service',
       recovery:
@@ -298,8 +305,7 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
     {
       reason: 'snapshot_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'No MAB snapshot has loaded yet and the Data Hub is unreachable',
-      retryable: true,
+      when: 'No MAB snapshot has loaded yet: the Data Hub is unreachable, failing, or rate-limiting (retryable), or it rejected the request or served data this server cannot use (not retryable)',
       thrownBy: 'service',
       recovery:
         'The UNESCO Data Hub could not be reached to load the biosphere reserve network; wait until the next load attempt this error names (retryAfter, in seconds), then call unesco_search_biosphere_reserves again.',
@@ -340,6 +346,7 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
       country = { code: input.country, name: countryDisplayName(input.country) };
     }
 
+    const limit = clampBudget(LIMIT_BUDGET, input.limit);
     const applied: AppliedFilters = {
       ...(input.query ? { query: input.query } : {}),
       ...(country ? { country } : {}),
@@ -351,7 +358,7 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
       ...(input.designated_to !== undefined ? { designated_to: input.designated_to } : {}),
       ...(input.near ? { near: input.near } : {}),
       sort,
-      limit: input.limit,
+      limit: limit.applied,
       include_description: input.include_description,
     };
     const { limit: _limit, include_description: _includeDescription, ...fingerprinted } = applied;
@@ -416,12 +423,16 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
     ctx.enrich({ facets: reserveFacets(matched.map((i) => records[i] as BiosphereReserve)) });
 
     matched.sort(reserveComparator(sort, records, tierOf, distanceOf));
-    const page = matched
-      .slice(offset, offset + input.limit)
-      .map((i) =>
-        toRow(records[i] as BiosphereReserve, tierOf[i], distanceOf[i], input.include_description),
+    const page = matched.slice(offset, offset + limit.applied).map((i) => {
+      const km = distanceOf[i];
+      return toRow(
+        records[i] as BiosphereReserve,
+        tierOf[i],
+        near && km !== undefined ? displayDistanceKm(km, near.radius_km) : undefined,
+        input.include_description,
       );
-    ctx.enrich({ truncated: false, shown: page.length, cap: input.limit });
+    });
+    ctx.enrich({ truncated: false, shown: page.length, cap: limit.applied });
 
     const fragments: string[] = [];
     if (total === 0) {
@@ -456,13 +467,19 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
       );
     }
 
-    const { more, notice } = composePageNotice({ fragments, offset, shown: page.length, total });
+    const { more, notice } = composePageNotice({
+      fragments,
+      limit,
+      offset,
+      shown: page.length,
+      total,
+    });
     let next_cursor: string | undefined;
     if (more) {
-      ctx.enrich.truncated({ shown: page.length, cap: input.limit, guidance: notice });
+      ctx.enrich.truncated({ shown: page.length, cap: limit.applied, guidance: notice });
       next_cursor = makeCursor({
         offset: offset + page.length,
-        limit: input.limit,
+        limit: limit.applied,
         fp,
         asOf: biosphere.asOf,
       });

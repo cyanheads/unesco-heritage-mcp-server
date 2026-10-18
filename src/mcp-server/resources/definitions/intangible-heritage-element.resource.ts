@@ -1,7 +1,7 @@
 /**
  * @fileoverview unesco://intangible-heritage/{ich_ref} — one intangible
  * heritage element record: the unesco_get_intangible_heritage_element payload
- * plus the `sources` attribution block.
+ * with the English description, plus the `sources` attribution block.
  * @module mcp-server/resources/definitions/intangible-heritage-element.resource
  */
 
@@ -20,7 +20,7 @@ export const intangibleHeritageElementResource = resource(
     name: 'unesco_intangible_heritage_element',
     title: 'Intangible heritage element record',
     description:
-      "One Intangible Cultural Heritage element's full record by ich_ref, as unesco_get_intangible_heritage_element returns it, plus a sources array carrying the dataset date, license, and UNESCO attribution.",
+      "One Intangible Cultural Heritage element's full record by ich_ref, as unesco_get_intangible_heritage_element returns it with the English description, plus a sources array carrying the dataset date, license, and UNESCO attribution. For the French description, call unesco_get_intangible_heritage_element with description_language fr.",
     mimeType: 'application/json',
     cacheHint: { ttlMs: 3_600_000, cacheScope: 'public' },
     params: z.object({
@@ -37,8 +37,7 @@ export const intangibleHeritageElementResource = resource(
       {
         reason: 'snapshot_unavailable',
         code: JsonRpcErrorCode.ServiceUnavailable,
-        when: 'No intangible heritage snapshot has loaded yet and the Data Hub is unreachable',
-        retryable: true,
+        when: 'No intangible heritage snapshot has loaded yet: the Data Hub is unreachable, failing, or rate-limiting (retryable), or it rejected the request or served data this server cannot use (not retryable)',
         thrownBy: 'service',
         recovery:
           'The UNESCO Data Hub could not be reached to load the Intangible Heritage List; wait until the next load attempt this error names (retryAfter, in seconds), then read the resource again.',

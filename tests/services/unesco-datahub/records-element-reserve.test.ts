@@ -93,7 +93,33 @@ describe('buildElementRecord', () => {
     const source = element();
     const before = structuredClone(source);
     buildElementRecord(source);
+    buildElementRecord(source, 'fr');
     expect(source).toEqual(before);
+  });
+
+  it('returns the French description, labelled fr, and leaves every other field unchanged', () => {
+    const { description: _en, ...english } = buildElementRecord(element());
+    const record = buildElementRecord(element(), 'fr');
+    const { description, description_language, ...rest } = record;
+    expect(description).toBe('Une pratique synthétique utilisée comme données de test.');
+    expect(description_language).toBe('fr');
+    expect(rest).toEqual(english);
+    expect(Object.keys(record)).toContain('description_language');
+    expect(record).not.toHaveProperty('description_translations');
+  });
+
+  it('labels an explicit en request', () => {
+    expect(buildElementRecord(element(), 'en')).toMatchObject({
+      description: 'A synthetic practice used as test data.',
+      description_language: 'en',
+    });
+  });
+
+  it('falls back to the English description, labelled en, when UNESCO publishes no French one', () => {
+    expect(buildElementRecord(element({ description_fr: null }), 'fr')).toMatchObject({
+      description: 'A synthetic practice used as test data.',
+      description_language: 'en',
+    });
   });
 });
 

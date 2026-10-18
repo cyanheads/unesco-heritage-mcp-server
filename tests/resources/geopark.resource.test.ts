@@ -12,8 +12,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { geoparkResource as resource } from '@/mcp-server/resources/definitions/geopark.resource.js';
 import { getGeoparkTool } from '@/mcp-server/tools/definitions/get-geopark.tool.js';
 import { declaredRecovery } from '../fixtures/contract.js';
-import { failureCases, settle, withFakeTimers } from '../fixtures/failures.js';
-import { httpFailure } from '../fixtures/hub.js';
+import {
+  contentFailureCases,
+  expectContentFailure,
+  rejectionFrom,
+  settleRejection,
+  transportFailureCases,
+  withFakeTimers,
+} from '../fixtures/failures.js';
+import { transientFailure } from '../fixtures/hub.js';
 import { matchUri, readResource } from '../fixtures/resource.js';
 import { EG_ROWS, egRow } from '../fixtures/rows.js';
 import { disposeServiceAfterEach, structured, useHub } from '../fixtures/tool.js';
@@ -179,7 +186,7 @@ describe('unesco://geopark/{ugg_id} — errors', () => {
   });
 
   it('snapshot_unavailable: ServiceUnavailable with dataset and retryAfter', async () => {
-    useHub({ intercept: () => httpFailure(404) });
+    useHub({ intercept: () => transientFailure() });
     await expect(read('unesco://geopark/EUFR90')).rejects.toMatchObject({
       code: JsonRpcErrorCode.ServiceUnavailable,
       data: { reason: 'snapshot_unavailable', dataset: 'eg0001', retryAfter: 60 },
@@ -195,16 +202,29 @@ describe('unesco://geopark/{ugg_id} — upstream failure classes', () => {
     vi.useRealTimers();
   });
 
-  it.each(failureCases('eg0001', EG_ROWS.length))(
-    'reports %s as snapshot_unavailable',
+  it.each(transportFailureCases('eg0001', EG_ROWS.length))(
+    'reports %s as retryable snapshot_unavailable',
     async (_label, intercept) => {
       withFakeTimers();
       useHub({ intercept });
-      const pending = read('unesco://geopark/EUFR90').catch((e: unknown) => e);
-      expect(await settle(pending)).toMatchObject({
+      expect(await settleRejection(read('unesco://geopark/EUFR90'))).toMatchObject({
         code: JsonRpcErrorCode.ServiceUnavailable,
-        data: { reason: 'snapshot_unavailable', dataset: 'eg0001' },
+        data: { reason: 'snapshot_unavailable', retryable: true, dataset: 'eg0001' },
       });
+    },
+  );
+
+  it.each(contentFailureCases('eg0001'))(
+    'reports %s as non-retryable snapshot_unavailable with the service recovery',
+    async (_label, hub) => {
+      useHub(hub);
+      const error = await rejectionFrom(read('unesco://geopark/EUFR90'));
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expectContentFailure(
+        error,
+        'eg0001',
+        declaredRecovery(resource.errors, 'snapshot_unavailable'),
+      );
     },
   );
 

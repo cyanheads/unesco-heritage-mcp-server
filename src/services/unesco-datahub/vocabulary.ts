@@ -1,9 +1,9 @@
 /**
  * @fileoverview Controlled vocabularies and dataset constants: UNESCO regions,
  * site categories, the ten inscription criteria with paraphrased meanings, the
- * three intangible heritage lists, the MAB regional networks, and per-dataset
- * titles and attribution. Shared by the loader (enum validation), the tools
- * (input enums and normalizers), and the reference tool.
+ * three intangible heritage lists, the description languages, the MAB regional
+ * networks, and per-dataset titles and attribution. Shared by the loader (enum
+ * validation), the tools (input enums and normalizers), and the reference tool.
  * @module services/unesco-datahub/vocabulary
  */
 
@@ -127,6 +127,27 @@ export const INTANGIBLE_LIST_ACRONYMS: Readonly<Record<IntangibleList, string>> 
   'Representative List': 'RL',
   'Urgent Safeguarding List': 'USL',
   'Register of Good Safeguarding Practices': 'Art18',
+};
+
+/** The languages UNESCO publishes World Heritage short descriptions in, English first. */
+export const SITE_DESCRIPTION_LANGUAGES = ['en', 'fr', 'es', 'ru', 'ar', 'zh'] as const;
+export type SiteDescriptionLanguage = (typeof SITE_DESCRIPTION_LANGUAGES)[number];
+
+/** The languages UNESCO publishes intangible heritage descriptions in, English first. */
+export const ELEMENT_DESCRIPTION_LANGUAGES = [
+  'en',
+  'fr',
+] as const satisfies readonly SiteDescriptionLanguage[];
+export type ElementDescriptionLanguage = (typeof ELEMENT_DESCRIPTION_LANGUAGES)[number];
+
+/** English names of the description languages, for notices. */
+export const LANGUAGE_NAMES: Readonly<Record<SiteDescriptionLanguage, string>> = {
+  en: 'English',
+  fr: 'French',
+  es: 'Spanish',
+  ru: 'Russian',
+  ar: 'Arabic',
+  zh: 'Chinese',
 };
 
 /** MAB regional networks: the full name as `mab001` records it, and its acronym. */

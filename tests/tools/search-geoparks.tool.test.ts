@@ -18,8 +18,14 @@ import { searchGeoparksTool as tool } from '@/mcp-server/tools/definitions/searc
 import { makeCursor, readCursor } from '@/services/unesco-datahub/search.js';
 import { getUnescoDataHubService } from '@/services/unesco-datahub/unesco-datahub-service.js';
 import { declaredRecovery } from '../fixtures/contract.js';
-import { failureCases, settle, withFakeTimers } from '../fixtures/failures.js';
-import { httpFailure } from '../fixtures/hub.js';
+import {
+  contentFailureCases,
+  expectContentFailure,
+  settle,
+  transportFailureCases,
+  withFakeTimers,
+} from '../fixtures/failures.js';
+import { httpFailure, transientFailure } from '../fixtures/hub.js';
 import { manyEgRows } from '../fixtures/paging.js';
 import { EG_ROWS, egRow } from '../fixtures/rows.js';
 import {
@@ -162,7 +168,7 @@ describe('unesco_search_geoparks — basics', () => {
 
   it.each([
     ['limit 0', { limit: 0 }],
-    ['limit 51', { limit: 51 }],
+    ['limit 10001', { limit: 10_001 }],
     ['a string limit', { limit: '10' }],
     ['a country over 64 characters', { country: 'A'.repeat(65) }],
     ['an unknown sort', { sort: 'popularity' }],
@@ -411,6 +417,61 @@ describe('unesco_search_geoparks — distance search', () => {
     expect(out.geoparks[0]?.distance_km).toBe(out.geoparks[1]?.distance_km);
   });
 
+  it('leaves out a geopark whose distance only rounds into the radius', async () => {
+    const point = { latitude: 49.9004, longitude: 1.5 }; // EUFR90 is 0.044 km away
+    const inside = await search({ near: { ...point, radius_km: 0.05 } });
+    expect(inside.out.geoparks.map((g) => [g.ugg_id, g.distance_km])).toEqual([['EUFR90', 0]]);
+    const { out } = await search({ near: { ...point, radius_km: 0.001 } });
+    expect(out.totalCount).toBe(0);
+    expect(out.facets.transnational).toEqual({ true: 0, false: 0 });
+    expect(out.notice).toBe(
+      'No UNESCO Global Geopark lies within 0.001 km of (49.9004, 1.5). Increase radius_km.',
+    );
+  });
+
+  describe('at the radius edge', () => {
+    /** 11.0861 km from (60, 5) for ZZ11 and ZZ12, 11.1195 km for ZZ10: all 11.1 rounded. */
+    const at = (ugg_id: string, lat: number) =>
+      egRow({ ugg_id, title_en: `${ugg_id} Geopark`, coordinates: { lon: 5, lat } });
+    const EDGE_ROWS = [at('ZZ10', 60.1), at('ZZ11', 60.0997), at('ZZ12', 60.0997)];
+    beforeEach(() => {
+      useHub({ rows: { eg0001: EDGE_ROWS } });
+    });
+    const near = (radius_km: number) => ({ near: { latitude: 60, longitude: 5, radius_km } });
+
+    it('matches on the unrounded distance and never shows a distance past radius_km', async () => {
+      const { out, text } = await search(near(11.09));
+      expect(out.totalCount).toBe(2);
+      expect(out.geoparks.map((g) => [g.ugg_id, g.distance_km])).toEqual([
+        ['ZZ11', 11.09],
+        ['ZZ12', 11.09],
+      ]);
+      expect(text).toContain('Distance: 11.09 km');
+    });
+
+    it('leaves out the geopark just past the radius', async () => {
+      const { out } = await search(near(11.1));
+      expect(ids(out)).toEqual(['ZZ11', 'ZZ12']);
+      expect(out.facets.top_countries).toEqual([{ code: 'FR', name: 'France', count: 2 }]);
+    });
+
+    it.each([
+      ['in ugg_id order', EDGE_ROWS],
+      ['in reverse ugg_id order', [...EDGE_ROWS].reverse()],
+    ])(
+      'orders by unrounded distance, with ugg_id breaking exact ties only (rows %s)',
+      async (_label, rows) => {
+        useHub({ rows: { eg0001: rows } });
+        const { out } = await search(near(30));
+        expect(out.geoparks.map((g) => [g.ugg_id, g.distance_km])).toEqual([
+          ['ZZ11', 11.1],
+          ['ZZ12', 11.1],
+          ['ZZ10', 11.1],
+        ]);
+      },
+    );
+  });
+
   it('keeps distance_km on rows when a query drives the sort', async () => {
     const { out } = await search({
       query: 'geopark',
@@ -441,7 +502,7 @@ describe('unesco_search_geoparks — distance search', () => {
     ['a negative radius', { latitude: 10, longitude: 10, radius_km: -5 }],
     ['a radius above 5000', { latitude: 10, longitude: 10, radius_km: 5001 }],
     ['an undeclared key', { latitude: 10, longitude: 10, radius: 5 }],
-    ['a string latitude', { latitude: '10', longitude: 10 }],
+    ['a non-numeric string latitude', { latitude: '10N', longitude: 10 }],
   ])('rejects near with %s as invalid arguments', async (_label, near) => {
     const error = errorOf(await runToolContract(tool, { near } as never));
     expect(error.code).toBe(JsonRpcErrorCode.InvalidParams);
@@ -705,6 +766,46 @@ describe('unesco_search_geoparks — pagination and cursors', () => {
       );
       expect(out.next_cursor).toBeUndefined();
     }
+  });
+});
+
+describe('unesco_search_geoparks — limit above the per-call cap', () => {
+  beforeEach(() => {
+    useHub({ rows: { eg0001: manyEgRows(120) } });
+  });
+
+  it.each([51, 10_000])(
+    'serves limit %i as the limit-50 page, the clamp leading notice',
+    async (limit) => {
+      const atCap = await search({ limit: 50 });
+      expect(atCap.out.notice).toBe('Showing results 1–50 of 120; pass next_cursor to continue.');
+      const { out, text } = await search({ limit });
+      expect(ids(out)).toEqual(ids(atCap.out));
+      expect(out).toMatchObject({ totalCount: 120, shown: 50, cap: 50, truncated: true });
+      expect(out.next_cursor).toBe(atCap.out.next_cursor);
+      expect(out.applied_filters.limit).toBe(50);
+      expect(out.notice).toBe(
+        `limit ${limit} is above the per-call cap of 50, so this page holds at most 50 results. Showing results 1–50 of 120; pass next_cursor to continue.`,
+      );
+      expect(text).toContain(out.notice as string);
+    },
+  );
+
+  it('continues a clamped page with results 51–100', async () => {
+    const first = (await search({ limit: 51 })).out;
+    const second = (await search({ limit: 51, cursor: first.next_cursor })).out;
+    const atCap = (await search({ limit: 50 })).out;
+    const atCapSecond = (await search({ limit: 50, cursor: atCap.next_cursor })).out;
+    expect(ids(second)).toEqual(ids(atCapSecond));
+    expect(second.notice).toBe(
+      'limit 51 is above the per-call cap of 50, so this page holds at most 50 results. Showing results 51–100 of 120; pass next_cursor to continue.',
+    );
+  });
+
+  it('rejects limit 10001, naming the 10000 ceiling', async () => {
+    const error = errorOf(await runToolContract(tool, { limit: 10_001 } as never));
+    expect(error.data?.reason).toBe('invalid_arguments');
+    expect(error.message).toContain('10000');
   });
 });
 
@@ -1064,20 +1165,36 @@ describe('unesco_search_geoparks — upstream failure classes', () => {
     vi.useRealTimers();
   });
 
-  it.each(failureCases('eg0001', EG_ROWS.length))(
-    'reports %s as snapshot_unavailable',
+  it.each(transportFailureCases('eg0001', EG_ROWS.length))(
+    'reports %s as retryable snapshot_unavailable with the declared recovery',
     async (_label, intercept) => {
       withFakeTimers();
       useHub({ intercept });
       const error = errorOf(await settle(runToolContract(tool, {})));
       expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
-      expect(error.data).toMatchObject({ reason: 'snapshot_unavailable', dataset: 'eg0001' });
-      expect(error.data?.recovery?.hint).toContain('unesco_search_geoparks');
+      expect(error.data).toMatchObject({
+        reason: 'snapshot_unavailable',
+        retryable: true,
+        dataset: 'eg0001',
+        recovery: { hint: declaredRecovery(tool.errors, 'snapshot_unavailable') },
+      });
+    },
+  );
+
+  it.each(contentFailureCases('eg0001'))(
+    'reports %s as non-retryable snapshot_unavailable with the service recovery',
+    async (_label, hub) => {
+      useHub(hub);
+      const result = await runToolContract(tool, {});
+      const error = errorOf(result);
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expectContentFailure(error, 'eg0001', declaredRecovery(tool.errors, 'snapshot_unavailable'));
+      expect(allText(result)).toContain(`Recovery: ${error.data?.recovery?.hint}`);
     },
   );
 
   it('declares the recovery on the wire for a plain failure', async () => {
-    useHub({ intercept: () => httpFailure(404) });
+    useHub({ intercept: () => transientFailure() });
     const result = await runToolContract(tool, {});
     expect(errorOf(result).data).toMatchObject({
       reason: 'snapshot_unavailable',

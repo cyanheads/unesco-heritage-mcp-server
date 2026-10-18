@@ -47,6 +47,48 @@ const whcById = (id: string) => {
   return WhcRowSchema.parse(row);
 };
 
+/** `unit` repeated and cut to exactly `length` characters. */
+const fill = (unit: string, length: number) =>
+  unit.repeat(Math.ceil(length / unit.length)).slice(0, length);
+
+/** This thread's CPU time spent in `run`, in ms, which load on other cores does not inflate. */
+function threadCpuMs(run: () => void): number {
+  const before = process.threadCpuUsage();
+  run();
+  const { user, system } = process.threadCpuUsage(before);
+  return (user + system) / 1_000;
+}
+
+/**
+ * Asserts `run` costs time linear in its input's length. The input doubles from
+ * 5k to 320k characters (a 64× span). At each size, the fastest of three
+ * 10-call batches after a warm-up must stay under `maxMsPerCall` of thread CPU
+ * time, checked before the next size runs; across the span the per-call cost
+ * must grow less than 256× (linear growth is 64×, quadratic 4,096×).
+ */
+function expectLinearTime(
+  build: (length: number) => string,
+  run: (input: string) => unknown,
+  maxMsPerCall: number,
+): void {
+  const perCall: number[] = [];
+  for (let size = 5_000; size <= 320_000; size *= 2) {
+    const input = build(size);
+    run(input);
+    let best = Number.POSITIVE_INFINITY;
+    for (let batch = 0; batch < 3; batch += 1) {
+      const ms = threadCpuMs(() => {
+        for (let i = 0; i < 10; i += 1) run(input);
+      });
+      best = Math.min(best, ms / 10);
+    }
+    expect(best, `${size} characters`).toBeLessThan(maxMsPerCall);
+    perCall.push(best);
+  }
+  const first = Math.max(perCall[0] ?? 0, 0.001);
+  expect((perCall.at(-1) ?? 0) / first).toBeLessThan(256);
+}
+
 describe('field allowlists', () => {
   it.each([
     ['whc001', WHC_FIELDS, WhcRowSchema],
@@ -100,6 +142,12 @@ describe('cleanText', () => {
     expect(cleanText('a&hellip;b &#0; &#1114112; &#xD800;x')).toContain('&hellip;');
     expect(cleanText('&#0;')).toBe('&#0;');
     expect(cleanText('&#1114112;')).toBe('&#1114112;');
+  });
+
+  it('keeps entity-shaped Object.prototype names as written', () => {
+    expect(cleanText('&constructor; &__proto__; &toString; &hasOwnProperty;')).toBe(
+      '&constructor; &__proto__; &toString; &hasOwnProperty;',
+    );
   });
 
   it('does not double-decode', () => {
@@ -168,21 +216,7 @@ describe('cleanText', () => {
     );
   });
 
-  describe('runs in linear time on adversarial list markup', () => {
-    const fill = (unit: string, length: number) =>
-      unit.repeat(Math.ceil(length / unit.length)).slice(0, length);
-    /** Fastest of seven 10-call batches after a warm-up, in ms per call. */
-    const msPerCall = (input: string) => {
-      for (let i = 0; i < 3; i += 1) cleanText(input);
-      let best = Number.POSITIVE_INFINITY;
-      for (let sample = 0; sample < 7; sample += 1) {
-        const started = performance.now();
-        for (let i = 0; i < 10; i += 1) cleanText(input);
-        best = Math.min(best, (performance.now() - started) / 10);
-      }
-      return best;
-    };
-
+  describe('runs in linear time on adversarial list markup and entities', () => {
     it.each<[string, (length: number) => string]>([
       ['a repeated raw opener with no closer', (n) => fill('<li', n)],
       ['a repeated encoded opener with no closer', (n) => fill('&lt;li', n)],
@@ -191,12 +225,19 @@ describe('cleanText', () => {
       ['nested encoded openers', (n) => fill('&lt;ul&gt;&lt;li&gt;', n)],
       ['tags, whitespace, and broken openers', (n) => fill('<li>  <li  ', n)],
       ['a whitespace run with no tag', (n) => `${' '.repeat(n - 1)}x`],
-    ])('%s: 80k characters cost under 64× what 5k cost', (_label, build) => {
-      const small = msPerCall(build(5_000));
-      const large = msPerCall(build(80_000));
-      expect(large / small).toBeLessThan(64);
-      expect(large).toBeLessThan(25);
-    });
+      ['openers interleaved with line breaks', (n) => fill('<li>\n&lt;li \n', n)],
+      ['one numeric entity with no semicolon', (n) => `&#${'1'.repeat(n - 2)}`],
+      ['repeated hex entity openers with no semicolon', (n) => fill('&#x1', n)],
+      ['a run of ampersands', (n) => fill('&', n)],
+      ['repeated inline-tag openers with no closer', (n) => fill('<i', n)],
+      ['repeated line-break openers with no closer', (n) => fill('<br', n)],
+    ])(
+      '%s: linear in thread CPU time from 5k to 320k characters',
+      (_label, build) => {
+        expectLinearTime(build, cleanText, 50);
+      },
+      30_000,
+    );
   });
 });
 
@@ -345,23 +386,56 @@ describe('parseComponentsList', () => {
     expect(result.unparsed).toBe(1);
   });
 
-  it.each([
-    ['many `, ref: ` sequences and no coordinates', `name: ${', ref: '.repeat(30_000)}x`],
+  it.each<[string, (length: number) => string]>([
+    ['many `, ref: ` sequences and no coordinates', (n) => `name: ${fill(', ref: ', n)}x`],
     [
       'many `, ref: , latitude: 1` runs and no longitude',
-      `name: ${', ref: , latitude: 1'.repeat(10_000)}x`,
+      (n) => `name: ${fill(', ref: , latitude: 1', n)}x`,
     ],
     [
       'many coordinate tails and a non-numeric end',
-      `name: a${', ref: r, latitude: 1, longitude: 2'.repeat(5_000)}x`,
+      (n) => `name: a${fill(', ref: r, latitude: 1, longitude: 2', n)}x`,
     ],
-  ])('reads a 200 KB part with %s in linear time and counts it unparsed', (_label, part) => {
-    const started = performance.now();
-    const result = parseComponentsList(`{${part}}`);
-    const elapsedMs = performance.now() - started;
-    expect(result).toEqual({ components: [], parts: 1, unparsed: 1 });
-    expect(elapsedMs).toBeLessThan(50);
-  });
+  ])(
+    'reads a part with %s in linear time, up to 320k characters, and counts it unparsed',
+    (_label, part) => {
+      expectLinearTime((n) => `{${part(n)}}`, parseComponentsList, 50);
+      expect(parseComponentsList(`{${part(320_000)}}`)).toEqual({
+        components: [],
+        parts: 1,
+        unparsed: 1,
+      });
+    },
+    30_000,
+  );
+
+  it('reads a list of many small parts in linear time, up to 320k characters', () => {
+    const partsOf = (length: number) => {
+      const parts: string[] = [];
+      let size = 2;
+      while (size < length) {
+        const part = `name: c, ref: r${parts.length}, latitude: 1, longitude: 2`;
+        parts.push(part);
+        size += part.length + 4;
+      }
+      return parts;
+    };
+    const list = (length: number) => `{${partsOf(length).join('}, {')}}`;
+    expectLinearTime(list, parseComponentsList, 50);
+    const count = partsOf(320_000).length;
+    expect(count).toBeGreaterThan(5_000);
+    const result = parseComponentsList(list(320_000));
+    expect(result.parts).toBe(count);
+    expect(result.unparsed).toBe(0);
+    expect(result.components).toHaveLength(count);
+    expect(result.components[0]).toEqual({ ref: 'r0', latitude: 1, longitude: 2, name: 'c' });
+    expect(result.components.at(-1)).toEqual({
+      ref: `r${count - 1}`,
+      latitude: 1,
+      longitude: 2,
+      name: 'c',
+    });
+  }, 30_000);
 
   it('splits each entry exactly as an anchored name/ref/latitude/longitude pattern would', () => {
     /** The entry grammar: greedy name, lazy ref, anchored numeric tail, so the last key sequence wins. */
@@ -666,7 +740,18 @@ describe('text length bounds', () => {
     ...scalar(['secondary_dates'], NAME),
     ...scalar(['iso_codes'], NAME, (length) => `FR,${' '.repeat(length - 5)}DE`),
     ...listOf(['states_names'], NAME),
-    ...scalar(['short_description_en', 'justification_en'], TEXT),
+    ...scalar(
+      [
+        'short_description_en',
+        'short_description_fr',
+        'short_description_es',
+        'short_description_ru',
+        'short_description_ar',
+        'short_description_zh',
+        'justification_en',
+      ],
+      TEXT,
+    ),
     ...scalar(['components_list'], COMPONENTS),
     ...scalar(['main_image_url'], URL_LENGTH, url),
   ];
@@ -682,7 +767,7 @@ describe('text length bounds', () => {
       NAME,
     ),
     ...listOf(['concepts_primary_names', 'concepts_secondary_names'], NAME),
-    ...scalar(['description_en', 'whc_sites'], TEXT),
+    ...scalar(['description_en', 'description_fr', 'whc_sites'], TEXT),
     ...scalar(['http_url_en', 'main_image_url'], URL_LENGTH, url),
   ];
   const MAB_CASES: Case[] = [
@@ -733,26 +818,62 @@ describe('text length bounds', () => {
 
 describe('DatasetMetaSchema', () => {
   const meta = {
+    fields: [{ name: 'id_no' }, { name: 'uuid' }],
     metas: { default: { data_processed: 'x', records_count: 3, license: 'CC BY-SA 4.0' } },
   };
 
-  it('reads the three fields and ignores the rest of the document', () => {
-    const parsed = DatasetMetaSchema.parse({ ...meta, dataset_id: 'whc001', fields: [] });
+  it('reads the three metas fields and the field names, and ignores the rest of the document', () => {
+    const parsed = DatasetMetaSchema.parse({
+      ...meta,
+      dataset_id: 'whc001',
+      fields: [
+        { name: 'id_no', label: 'ID', type: 'text', annotations: {} },
+        { name: 'uuid', label: 'UUID', type: 'text', description: null },
+      ],
+    });
     expect(parsed.metas.default).toEqual(meta.metas.default);
+    expect(parsed.fields).toEqual([{ name: 'id_no' }, { name: 'uuid' }]);
+  });
+
+  it('accepts a field name of 200 characters and an empty fields list', () => {
+    expect(
+      DatasetMetaSchema.safeParse({ ...meta, fields: [{ name: 'f'.repeat(200) }] }).success,
+    ).toBe(true);
+    expect(DatasetMetaSchema.safeParse({ ...meta, fields: [] }).success).toBe(true);
   });
 
   it.each([
-    ['a missing default block', { metas: {} }],
-    ['a string count', { metas: { default: { ...meta.metas.default, records_count: '3' } } }],
-    ['a negative count', { metas: { default: { ...meta.metas.default, records_count: -1 } } }],
-    ['a missing license', { metas: { default: { data_processed: 'x', records_count: 3 } } }],
+    ['a missing fields list', { metas: meta.metas }],
+    ['a fields value that is not a list', { ...meta, fields: { name: 'id_no' } }],
+    ['a field without a name', { ...meta, fields: [{ label: 'ID' }] }],
+    ['a field name that is not a string', { ...meta, fields: [{ name: 7 }] }],
+    ['a field name over 200 characters', { ...meta, fields: [{ name: 'f'.repeat(201) }] }],
+    ['a missing default block', { fields: meta.fields, metas: {} }],
+    [
+      'a string count',
+      { fields: meta.fields, metas: { default: { ...meta.metas.default, records_count: '3' } } },
+    ],
+    [
+      'a negative count',
+      { fields: meta.fields, metas: { default: { ...meta.metas.default, records_count: -1 } } },
+    ],
+    [
+      'a missing license',
+      { fields: meta.fields, metas: { default: { data_processed: 'x', records_count: 3 } } },
+    ],
     [
       'a data_processed over 100 characters',
-      { metas: { default: { ...meta.metas.default, data_processed: 'x'.repeat(101) } } },
+      {
+        fields: meta.fields,
+        metas: { default: { ...meta.metas.default, data_processed: 'x'.repeat(101) } },
+      },
     ],
     [
       'a license over 100 characters',
-      { metas: { default: { ...meta.metas.default, license: 'x'.repeat(101) } } },
+      {
+        fields: meta.fields,
+        metas: { default: { ...meta.metas.default, license: 'x'.repeat(101) } },
+      },
     ],
   ])('rejects %s', (_label, doc) => {
     expect(DatasetMetaSchema.safeParse(doc).success).toBe(false);
@@ -854,6 +975,24 @@ describe('toHeritageSite', () => {
     expect(site.image).toEqual({ url: 'https://whc.unesco.org/document/900', author: 'A. Tester' });
   });
 
+  it.each(['main_image_url', 'main_image_copyright', 'main_image_author'] as const)(
+    'serves no image when the export left out %s',
+    (field) => {
+      const { [field]: _dropped, ...row } = WhcRowSchema.parse(whcRow());
+      expect(toHeritageSite(row).site).not.toHaveProperty('image');
+    },
+  );
+
+  it.each(['main_image_copyright', 'main_image_author'] as const)(
+    'keeps the image when %s is selected but null',
+    (field) => {
+      const row = WhcRowSchema.parse(whcRow({ [field]: null }));
+      expect(toHeritageSite(row).site.image).toMatchObject({
+        url: 'https://whc.unesco.org/document/900',
+      });
+    },
+  );
+
   it('gives the code-less State-Party site an empty country_codes list', () => {
     const { site } = toHeritageSite(whcById('106'));
     expect(site.country_codes).toEqual([]);
@@ -890,6 +1029,43 @@ describe('toHeritageSite', () => {
   it('reads secondary_years as empty when only the inscription year is listed', () => {
     const { site } = toHeritageSite(whcById('103'));
     expect(site.secondary_years).toEqual([]);
+  });
+
+  it('keeps each published description translation, cleaned like the English text', () => {
+    expect(toHeritageSite(whcById('101')).site.description_translations).toEqual({
+      fr: 'Une ville fortifiée synthétique utilisée comme données de test.',
+      es: 'Una ciudad amurallada sintética usada como datos de prueba.',
+      ru: 'Синтетический город-крепость для тестовых данных.',
+      ar: 'مدينة مسورة اصطناعية تستخدم كبيانات اختبار.',
+      zh: '用作测试数据的合成城墙小镇。',
+    });
+    expect(toHeritageSite(whcById('107')).site.description_translations).toEqual({
+      fr: "Texte avec un mot 'cité' & plus. Seconde ligne.",
+    });
+  });
+
+  it('reads a null or blank-after-cleanup translation as unpublished, independently of the English text', () => {
+    const row = WhcRowSchema.parse(
+      whcRow({ short_description_fr: ' <em></em> ', short_description_zh: '中文' }),
+    );
+    const { site } = toHeritageSite(row);
+    expect(site.description_translations).toEqual({ zh: '中文' });
+    expect(site.description).toBe('A synthetic site used as test data.');
+    expect(toHeritageSite(whcById('105')).site.description_translations).toEqual({});
+  });
+
+  it('reads every translation as unpublished when the export left the columns out', () => {
+    const {
+      short_description_fr: _fr,
+      short_description_es: _es,
+      short_description_ru: _ru,
+      short_description_ar: _ar,
+      short_description_zh: _zh,
+      ...row
+    } = whcById('101');
+    const { site } = toHeritageSite(row);
+    expect(site.description_translations).toEqual({});
+    expect(site.description).toBe('A synthetic walled town used as test data.');
   });
 });
 
@@ -949,6 +1125,40 @@ describe('toIntangibleElement', () => {
     );
     expect(element.description).toBe('One.\n\nTwo.');
     expect(element.image).toEqual({ url: 'https://ich.unesco.org/img/photo/thumb/9000.jpg' });
+  });
+
+  it.each(['main_image_url', 'main_image_copyright', 'main_image_author'] as const)(
+    'serves no image when the export left out %s',
+    (field) => {
+      const { [field]: _dropped, ...row } = IchRowSchema.parse(ichRow());
+      expect(toIntangibleElement(row)).not.toHaveProperty('image');
+    },
+  );
+
+  it('serves a credited image without a caption when the export left out the caption', () => {
+    const { main_image_caption_en: _dropped, ...row } = IchRowSchema.parse(ichRow());
+    expect(toIntangibleElement(row).image).toEqual({
+      url: 'https://ich.unesco.org/img/photo/thumb/9000.jpg',
+      copyright: 'Synthetic Photo Agency',
+      author: 'A. Tester',
+    });
+  });
+
+  it('keeps the French description cleaned like the English text, line breaks included', () => {
+    const element = toIntangibleElement(
+      IchRowSchema.parse(ichRow({ description_fr: 'Un <b>rite</b> &amp; un chant.\n\nSuite.' })),
+    );
+    expect(element.description_translations).toEqual({ fr: 'Un rite & un chant.\n\nSuite.' });
+    expect(element.description).toBe('A synthetic practice used as test data.');
+  });
+
+  it('reads a null, blank, or left-out French description as unpublished', () => {
+    for (const description_fr of [null, '  ']) {
+      const element = toIntangibleElement(IchRowSchema.parse(ichRow({ description_fr })));
+      expect(element.description_translations).toEqual({});
+    }
+    const { description_fr: _dropped, ...row } = IchRowSchema.parse(ichRow());
+    expect(toIntangibleElement(row).description_translations).toEqual({});
   });
 });
 
@@ -1050,6 +1260,129 @@ describe('URL slots in site and element rows', () => {
     expect(element({ main_image_url: 'javascript:alert(1)' })).not.toHaveProperty('image');
     expect(() => element({ http_url_en: 'ftp://x.test/' })).toThrow(
       'http_url_en is not an http(s) URL.',
+    );
+  });
+});
+
+describe('URL entity decoding', () => {
+  const website = (value: string) =>
+    toBiosphereReserve(MabRowSchema.parse(mabRow({ website: value }))).website;
+  const ENTITY = /&(?:#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/i;
+
+  it('decodes &amp; between query parameters, so each parameter keeps its name', () => {
+    const decoded = website(
+      'http://www.example.test/index.php?module=roadnews&amp;ClassID=1&amp;act=ReadNews&amp;id=252',
+    );
+    expect(decoded).toBe(
+      'http://www.example.test/index.php?module=roadnews&ClassID=1&act=ReadNews&id=252',
+    );
+    expect([...new URL(decoded ?? '').searchParams.keys()]).toEqual([
+      'module',
+      'ClassID',
+      'act',
+      'id',
+    ]);
+  });
+
+  it.each([
+    ['a decimal &#38;', 'http://a.test/?a=1&#38;b=2', 'http://a.test/?a=1&b=2'],
+    ['a hex &#x26;', 'http://a.test/?a=1&#x26;b=2', 'http://a.test/?a=1&b=2'],
+    ['an uppercase &AMP;', 'http://a.test/?a=1&AMP;b=2', 'http://a.test/?a=1&b=2'],
+    ['an entity in the path', 'http://a.test/a&amp;b/c', 'http://a.test/a&b/c'],
+    [
+      'a double-encoded &amp;amp;, decoded once',
+      'http://a.test/?a=1&amp;amp;b=2',
+      'http://a.test/?a=1&amp;b=2',
+    ],
+    [
+      'a double-encoded &amp;#38;, decoded once',
+      'http://a.test/?a=1&amp;#38;b=2',
+      'http://a.test/?a=1&#38;b=2',
+    ],
+    [
+      'entity-shaped Object.prototype names, kept as written',
+      'http://a.test/?a=1&constructor;b=2&__proto__;c=3',
+      'http://a.test/?a=1&constructor;b=2&__proto__;c=3',
+    ],
+    [
+      'a decoded &lt; and &gt;, percent-encoded by the parser',
+      'http://a.test/?q=&lt;b&gt;',
+      'http://a.test/?q=%3Cb%3E',
+    ],
+    ['a trailing &nbsp;, trimmed after decoding', 'http://a.test/x&nbsp;', 'http://a.test/x'],
+  ])('decodes %s before parsing', (_label, raw, expected) => {
+    expect(website(raw)).toBe(expected);
+  });
+
+  it('keeps a numeric &#38; in the query instead of letting its # start the fragment', () => {
+    const url = new URL(website('http://a.test/?a=1&#38;b=2') ?? '');
+    expect(url.hash).toBe('');
+    expect(url.searchParams.get('b')).toBe('2');
+  });
+
+  it('decodes only entities: list, inline, and line-break tags stay in the URL', () => {
+    expect(website('http://a.test/<ul><li>x</li></ul><em>y</em><br/>z')).toBe(
+      'http://a.test/%3Cul%3E%3Cli%3Ex%3C/li%3E%3C/ul%3E%3Cem%3Ey%3C/em%3E%3Cbr/%3Ez',
+    );
+  });
+
+  it('drops an optional URL, and fails a required one, that decodes to a non-http(s) URL', () => {
+    expect(website('javascript&#58;alert(1)')).toBeUndefined();
+    expect(() =>
+      toBiosphereReserve(MabRowSchema.parse(mabRow({ url: 'ftp&#58;//x.test/' }))),
+    ).toThrow('url is not an http(s) URL.');
+    expect(() =>
+      toIntangibleElement(IchRowSchema.parse(ichRow({ http_url_en: 'ftp&#x3a;//x.test/' }))),
+    ).toThrow('http_url_en is not an http(s) URL.');
+  });
+
+  it('decodes the page, image, and website URLs of every dataset the same way', () => {
+    const element = toIntangibleElement(
+      IchRowSchema.parse(
+        ichRow({
+          http_url_en: 'https://ich.test/en/RL/09000?a=1&amp;b=2',
+          main_image_url: 'https://ich.test/img?w=1&amp;h=2',
+        }),
+      ),
+    );
+    expect(element.url).toBe('https://ich.test/en/RL/09000?a=1&b=2');
+    expect(element.image?.url).toBe('https://ich.test/img?w=1&h=2');
+    const { site } = toHeritageSite(
+      WhcRowSchema.parse(whcRow({ main_image_url: 'https://whc.test/doc?a=1&#38;b=2' })),
+    );
+    expect(site.image?.url).toBe('https://whc.test/doc?a=1&b=2');
+    const reserve = toBiosphereReserve(
+      MabRowSchema.parse(mabRow({ url: 'https://www.unesco.org/en/mab/x?a=1&amp;b=2' })),
+    );
+    expect(reserve.url).toBe('https://www.unesco.org/en/mab/x?a=1&b=2');
+    const geopark = toGeopark(
+      EgRowSchema.parse(
+        egRow({
+          website: 'https://g.test/?a=1&amp;b=2',
+          url: 'https://www.unesco.org/en/iggp/x?a=1&amp;b=2',
+        }),
+      ),
+    );
+    expect(geopark.website).toBe('https://g.test/?a=1&b=2');
+    expect(geopark.url).toBe('https://www.unesco.org/en/iggp/x?a=1&b=2');
+  });
+
+  it('keeps the exact href of every http(s) URL that carries no entity', () => {
+    const text = (alphabet: string, maxLength: number) =>
+      fc.array(fc.constantFrom(...alphabet), { maxLength }).map((chars) => chars.join(''));
+    const url = fc
+      .tuple(
+        fc.constantFrom('http', 'https'),
+        text('abc123', 8),
+        text("abcXYZ019-._~!$&'()*+,;=:@%/?#", 60),
+      )
+      .map(([scheme, host, rest]) => `${scheme}://${host || 'a'}.test/${rest}`)
+      .filter((value) => !ENTITY.test(value));
+    fc.assert(
+      fc.property(url, (value) => {
+        expect(website(value)).toBe(new URL(value).href);
+      }),
+      { numRuns: 200 },
     );
   });
 });

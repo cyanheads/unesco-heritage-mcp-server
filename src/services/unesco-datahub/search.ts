@@ -2,8 +2,8 @@
  * @fileoverview Pure search helpers over snapshot records, shared by the four
  * search tools and the reference `filter`: text folding, word-prefix and CJK
  * matching with cumulative field tiers, named filters and the single-removal
- * probe, facet counting, haversine distance, sort comparators with id
- * tie-breaks, and the cursor fingerprint.
+ * probe, facet counting, haversine distance and its display rounding, sort
+ * comparators with id tie-breaks, and the cursor fingerprint.
  * @module services/unesco-datahub/search
  */
 
@@ -78,15 +78,26 @@ export function matchesAllWords(filter: string, columns: readonly (string | unde
   return words.every((word) => wordMatches(word, tier));
 }
 
-/** Great-circle distance in km on a 6,371 km sphere, rounded to 0.1 km. */
+/**
+ * Great-circle distance in km on a 6,371 km sphere, unrounded: the radius
+ * match, the nearest-point choice, and the `distance` sort all decide on it.
+ */
 export function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const rad = Math.PI / 180;
   const dLat = (lat2 - lat1) * rad;
   const dLon = (lon2 - lon1) * rad;
   const a =
     Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) ** 2;
-  const km = 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(a)));
-  return Math.round(km * 10) / 10;
+  return 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+/**
+ * The `distance_km` a matching row shows: its unrounded distance rounded to
+ * 0.1 km and clamped to `radiusKm`, so rounding up never displays a match past
+ * the radius it matched within.
+ */
+export function displayDistanceKm(km: number, radiusKm: number): number {
+  return Math.min(Math.round(km * 10) / 10, radiusKm);
 }
 
 /** A named record predicate; the name is what the zero-hit notice reports. */
@@ -207,17 +218,29 @@ export function makeCursor(state: SearchCursor & { limit: number }): string {
 }
 
 /**
- * Decodes a search cursor. A malformed cursor throws the framework's
- * `InvalidParams` (`reason: 'invalid_cursor'`), and so does one whose `offset`
- * or `limit` is not a safe integer: the framework's decoder rejects negative
- * values but lets fractions and infinities through. A well-formed cursor
- * missing the fingerprint fields decodes with empty strings, which never match.
+ * Decodes a search cursor. Every rejection throws `InvalidParams` carrying
+ * `reason: 'invalid_cursor'` and no `recovery`, so the calling tool's declared
+ * `invalid_cursor` recovery reaches the wire: a cursor the framework's decoder
+ * refuses (its own hint names a `nextCursor` field these tools don't return),
+ * and one whose `offset` or `limit` is not a safe integer, since the decoder
+ * rejects negative values but lets fractions and infinities through. A
+ * well-formed cursor missing the fingerprint fields decodes with empty strings,
+ * which never match.
  */
 export function readCursor(cursor: string, context: RequestContext): SearchCursor {
-  const state = decodeCursor(cursor, context);
+  let state: ReturnType<typeof decodeCursor>;
+  try {
+    state = decodeCursor(cursor, context);
+  } catch (cause) {
+    throw invalidParams(
+      'Invalid pagination cursor: it could not be decoded as a search cursor.',
+      { reason: 'invalid_cursor' },
+      { cause },
+    );
+  }
   if (!Number.isSafeInteger(state.offset) || !Number.isSafeInteger(state.limit)) {
     throw invalidParams(
-      'Invalid pagination cursor: its offset and limit must be non-negative whole numbers.',
+      'Invalid pagination cursor: its offset must be a non-negative whole number and its limit a positive one.',
       { reason: 'invalid_cursor' },
     );
   }

@@ -1,22 +1,29 @@
 /**
  * @fileoverview Tests for the shared input schemas: blank-as-unset wrapping,
- * enum folding, country/region/year/query/pagination/boolean inputs, the `near`
- * point, and the record-id normalizers.
+ * enum folding, description-language/country/region/year/query/pagination/
+ * boolean inputs, the output budgets and their clamp, the `near` point, and
+ * the record-id normalizers.
  * @module tests/shared/inputs.test
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
 import { describe, expect, it } from 'vitest';
 import {
+  BUDGET_CEILING,
   blankAsUnset,
   booleanInput,
+  budgetInput,
+  COMPONENTS_BUDGET,
+  clampBudget,
   countryInput,
   cursorInput,
+  descriptionLanguageInput,
   foldToEnum,
   ichRefInput,
   idNoInput,
   includeDescriptionInput,
   isBlank,
+  LIMIT_BUDGET,
   limitInput,
   nearInput,
   normalizeIchRef,
@@ -26,6 +33,10 @@ import {
   regionInput,
   yearInput,
 } from '@/mcp-server/shared/inputs.js';
+import {
+  ELEMENT_DESCRIPTION_LANGUAGES,
+  SITE_DESCRIPTION_LANGUAGES,
+} from '@/services/unesco-datahub/vocabulary.js';
 
 /** Parses a single value through a schema wrapped in an object, as a tool input does. */
 function parseField(schema: z.ZodType, value: unknown) {
@@ -140,6 +151,48 @@ describe('regionInput', () => {
   });
 });
 
+describe('descriptionLanguageInput', () => {
+  const site = descriptionLanguageInput(SITE_DESCRIPTION_LANGUAGES, 'A language.');
+  const element = descriptionLanguageInput(ELEMENT_DESCRIPTION_LANGUAGES, 'A language.');
+
+  it.each([
+    ['fr', 'fr'],
+    ['FR', 'fr'],
+    [' Zh ', 'zh'],
+    ['EN', 'en'],
+    ['ar', 'ar'],
+  ])('folds %j to %j', (input, expected) => {
+    expect(parsed(site, input)).toBe(expected);
+  });
+
+  it('reads blank, whitespace, and absent as unset', () => {
+    for (const schema of [site, element]) {
+      expect(parsed(schema, '')).toBeUndefined();
+      expect(parsed(schema, '  ')).toBeUndefined();
+      expect(parsed(schema, undefined)).toBeUndefined();
+    }
+  });
+
+  it('accepts only the languages it is built with', () => {
+    expect(parsed(element, 'Fr')).toBe('fr');
+    for (const value of ['es', 'ru', 'ar', 'zh', 'de', 'french', 'fr-FR', 1]) {
+      expect(rejects(element, value), String(value)).toBe(true);
+    }
+    for (const value of ['de', 'french', 'en-GB']) {
+      expect(rejects(site, value), value).toBe(true);
+    }
+  });
+
+  it('advertises an optional enum of the lowercase codes with the given description', () => {
+    const json = z.toJSONSchema(z.object({ v: element }), { io: 'input' }) as unknown as {
+      properties: { v: { description: string; enum: string[] } };
+      required?: string[];
+    };
+    expect(json.properties.v).toMatchObject({ enum: ['en', 'fr'], description: 'A language.' });
+    expect(json.required ?? []).toEqual([]);
+  });
+});
+
 describe('countryInput', () => {
   const schema = countryInput('A country.');
 
@@ -232,11 +285,19 @@ describe('limitInput / cursorInput', () => {
     expect(parsed(limitInput, '  ')).toBe(20);
   });
 
-  it('accepts 1–50 and rejects everything else', () => {
+  it('accepts 1–10000, leaving the clamp to 50 to the handler, and rejects everything else', () => {
     expect(parsed(limitInput, 1)).toBe(1);
     expect(parsed(limitInput, 50)).toBe(50);
-    for (const bad of [0, 51, -3, 2.5, null, '10'])
+    expect(parsed(limitInput, 51)).toBe(51);
+    expect(parsed(limitInput, 10_000)).toBe(10_000);
+    for (const bad of [0, 10_001, -3, 2.5, null, '10'])
       expect(rejects(limitInput, bad), String(bad)).toBe(true);
+  });
+
+  it('advertises the 10000 ceiling as its maximum', () => {
+    expect(z.toJSONSchema(z.object({ limit: limitInput }), { io: 'input' })).toMatchObject({
+      properties: { limit: { minimum: 1, maximum: 10_000, default: 20 } },
+    });
   });
 
   it('reads a blank cursor as unset and caps it at 1024 characters', () => {
@@ -245,6 +306,67 @@ describe('limitInput / cursorInput', () => {
     expect(parsed(cursorInput, 'abc')).toBe('abc');
     expect(parsed(cursorInput, 'x'.repeat(1024))).toBe('x'.repeat(1024));
     expect(rejects(cursorInput, 'x'.repeat(1025))).toBe(true);
+  });
+});
+
+describe('output budgets', () => {
+  it.each([0, 1])(
+    'budgetInput with minimum %i accepts the minimum through the ceiling, blank as the default',
+    (min) => {
+      const schema = budgetInput(min, 20, 'A budget.');
+      expect(parsed(schema, min)).toBe(min);
+      expect(parsed(schema, BUDGET_CEILING)).toBe(BUDGET_CEILING);
+      expect(parsed(schema, undefined)).toBe(20);
+      expect(parsed(schema, ' ')).toBe(20);
+      for (const bad of [min - 1, 0.5, 1.5, 'abc', '51', true, Number.NaN, BUDGET_CEILING + 1])
+        expect(rejects(schema, bad), String(bad)).toBe(true);
+    },
+  );
+
+  it('names the 10000 ceiling when rejecting a value above it', () => {
+    const result = parseField(budgetInput(1, 20, 'A budget.'), 10_001);
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]).toMatchObject({ code: 'too_big', maximum: 10_000 });
+    expect(result.error?.issues[0]?.message).toMatch(/(?<!\d)10000(?!\d)/);
+  });
+
+  it.each([
+    ['limit within the cap', LIMIT_BUDGET, 1, { applied: 1 }],
+    ['limit at the cap', LIMIT_BUDGET, 50, { applied: 50 }],
+    [
+      'limit one above the cap',
+      LIMIT_BUDGET,
+      51,
+      {
+        applied: 50,
+        fragment:
+          'limit 51 is above the per-call cap of 50, so this page holds at most 50 results.',
+      },
+    ],
+    [
+      'limit at the ceiling',
+      LIMIT_BUDGET,
+      10_000,
+      {
+        applied: 50,
+        fragment:
+          'limit 10000 is above the per-call cap of 50, so this page holds at most 50 results.',
+      },
+    ],
+    ['max_components 0', COMPONENTS_BUDGET, 0, { applied: 0 }],
+    ['max_components at the cap', COMPONENTS_BUDGET, 1000, { applied: 1000 }],
+    [
+      'max_components one above the cap',
+      COMPONENTS_BUDGET,
+      1001,
+      {
+        applied: 1000,
+        fragment:
+          'max_components 1001 is above the per-call cap of 1000, so at most 1000 components are listed.',
+      },
+    ],
+  ])('clampBudget: %s', (_label, budget, requested, expected) => {
+    expect(clampBudget(budget, requested)).toEqual(expected);
   });
 });
 

@@ -1,7 +1,8 @@
 /**
  * @fileoverview Tests for unesco_get_intangible_heritage_element: ich_ref
- * normalization and validation, the full record and its sparse shapes, the
- * declared error contracts, upstream failure classes, format() parity with
+ * normalization and validation, the full record and its sparse shapes,
+ * description_language with its English fallback and notice, the declared
+ * error contracts, upstream failure classes, format() parity with
  * structuredContent, and CR/LF in upstream text staying out of inline slots.
  * @module tests/tools/get-intangible-heritage-element.tool.test
  */
@@ -12,8 +13,14 @@ import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getIntangibleHeritageElementTool as tool } from '@/mcp-server/tools/definitions/get-intangible-heritage-element.tool.js';
 import { declaredRecovery } from '../fixtures/contract.js';
-import { failureCases, settle, withFakeTimers } from '../fixtures/failures.js';
-import { httpFailure } from '../fixtures/hub.js';
+import {
+  contentFailureCases,
+  expectContentFailure,
+  settle,
+  transportFailureCases,
+  withFakeTimers,
+} from '../fixtures/failures.js';
+import { fieldsWithout, httpFailure, transientFailure, withoutKeys } from '../fixtures/hub.js';
 import { ICH_ROWS, ichRow } from '../fixtures/rows.js';
 import {
   allText,
@@ -25,6 +32,7 @@ import {
 } from '../fixtures/tool.js';
 
 type ElementOutput = z.infer<typeof tool.output> & {
+  notice?: string;
   sources: {
     attribution: string;
     data_as_of: string;
@@ -214,7 +222,7 @@ describe('unesco_get_intangible_heritage_element — declared errors', () => {
   });
 
   it('snapshot_unavailable: ServiceUnavailable with dataset, retryAfter, and the declared recovery', async () => {
-    useHub({ intercept: () => httpFailure(404) });
+    useHub({ intercept: () => transientFailure() });
     const result = await runToolContract(tool, { ich_ref: 1001 });
     const error = errorOf(result);
     expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
@@ -279,15 +287,32 @@ describe('unesco_get_intangible_heritage_element — upstream failure classes', 
     vi.useRealTimers();
   });
 
-  it.each(failureCases('ich001', ICH_ROWS.length))(
-    'reports %s as snapshot_unavailable',
+  it.each(transportFailureCases('ich001', ICH_ROWS.length))(
+    'reports %s as retryable snapshot_unavailable with the declared recovery',
     async (_label, intercept) => {
       withFakeTimers();
       useHub({ intercept });
       const error = errorOf(await settle(runToolContract(tool, { ich_ref: 1001 })));
       expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
-      expect(error.data).toMatchObject({ reason: 'snapshot_unavailable', dataset: 'ich001' });
-      expect(error.data?.recovery?.hint).toContain('unesco_get_intangible_heritage_element');
+      expect(error.data).toMatchObject({
+        reason: 'snapshot_unavailable',
+        retryable: true,
+        dataset: 'ich001',
+        recovery: { hint: declaredRecovery(tool.errors, 'snapshot_unavailable') },
+      });
+    },
+  );
+
+  it.each(contentFailureCases('ich001'))(
+    'reports %s as non-retryable snapshot_unavailable with the service recovery',
+    async (_label, hub) => {
+      useHub(hub);
+      const result = await runToolContract(tool, { ich_ref: 1001 });
+      const error = errorOf(result);
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expectContentFailure(error, 'ich001', declaredRecovery(tool.errors, 'snapshot_unavailable'));
+      expect(allText(result)).toContain(`Recovery: ${error.data?.recovery?.hint}`);
+      expect(allText(result)).toContain('not retryable');
     },
   );
 
@@ -307,6 +332,117 @@ describe('unesco_get_intangible_heritage_element — upstream failure classes', 
     const error = errorOf(await runToolContract(tool, { ich_ref: 9000 }));
     expect(error.data?.reason).toBe('snapshot_unavailable');
   });
+});
+
+describe('unesco_get_intangible_heritage_element — description_language', () => {
+  beforeEach(() => {
+    useHub();
+  });
+
+  it('without description_language returns the English record, no description_language or notice, and the same content[]', async () => {
+    const { result, out } = await get({ ich_ref: '1001' });
+    expect(Object.keys(out)).toEqual([
+      'ich_ref',
+      'name',
+      'name_fr',
+      'list',
+      'country_codes',
+      'countries',
+      'multinational',
+      'inscribed_year',
+      'description',
+      'concepts',
+      'concepts_secondary',
+      'world_heritage_sites',
+      'url',
+      'image',
+      'sources',
+    ]);
+    expect(out.description).toBe('First paragraph.\n\nSecond paragraph.');
+    expect(textBlocks(result)).toEqual([
+      '## Synthetic Weaving Rite (ich_ref 1001)\n- **French name:** Rite de Tissage Synthétique\n- **List:** Representative List\n- **Countries:** France (FR), Belgium (BE)\n- **Inscribed:** 2010\n- **Multinational:** Yes\n- **URL:** https://ich.unesco.org/en/RL/09000\n\n**Description:**\n> First paragraph.\n>\n> Second paragraph.\n\n**Concepts:** Textile craft\n**Secondary concepts:** Community, Ritual\n\n**Linked World Heritage sites:**\n- 101 — Alderfen Old Town\n- 102 — Brindle Frontier Forest\n\n**Image:** https://ich.unesco.org/img/photo/thumb/9000.jpg\nCaption: A synthetic caption.\n© Synthetic Photo Agency\nPhoto: A. Tester',
+      '\n\nSource: UNESCO — Intangible Heritage List (ich001), data as of 2026-09-30T02:06:00+00:00, CC BY-SA 4.0 · https://creativecommons.org/licenses/by-sa/4.0/',
+    ]);
+  });
+
+  it.each(['', '  ', null])(
+    'reads description_language %j as unset',
+    async (description_language) => {
+      const unset = await get({ ich_ref: '1001' });
+      const blank = await get({ ich_ref: '1001', description_language });
+      expect(blank.out).toEqual(unset.out);
+      expect(textBlocks(blank.result)).toEqual(textBlocks(unset.result));
+    },
+  );
+
+  it('returns the French description, cleaned, labelled fr in both surfaces, with no notice', async () => {
+    const { out, text } = await get({ ich_ref: '1001', description_language: 'fr' });
+    expect(out.description).toBe('Premier paragraphe.\n\nDeuxième paragraphe & fin.');
+    expect(out.description_language).toBe('fr');
+    expect(out.notice).toBeUndefined();
+    expect(tool.output.parse(out)).toMatchObject({ description_language: 'fr' });
+    expect(text).toContain(
+      '**Description (fr):**\n> Premier paragraphe.\n>\n> Deuxième paragraphe & fin.',
+    );
+    expect(text).not.toContain('First paragraph.');
+    expect(text).not.toContain('UNESCO publishes no');
+  });
+
+  it('folds FR to fr and labels an explicit en request', async () => {
+    expect((await get({ ich_ref: '1001', description_language: 'FR' })).out).toMatchObject({
+      description_language: 'fr',
+    });
+    const { out, text } = await get({ ich_ref: '1001', description_language: 'en' });
+    expect(out).toMatchObject({
+      description: 'First paragraph.\n\nSecond paragraph.',
+      description_language: 'en',
+    });
+    expect(out.notice).toBeUndefined();
+    expect(text).toContain('**Description (en):**\n> First paragraph.');
+  });
+
+  it('keeps every other field as the English call returns it', async () => {
+    const english = (await get({ ich_ref: '1001' })).out;
+    const french = (await get({ ich_ref: '1001', description_language: 'fr' })).out;
+    const { description: _fr, description_language: _language, ...frenchRest } = french;
+    const { description: _en, ...englishRest } = english;
+    expect(frenchRest).toEqual(englishRest);
+  });
+
+  it('falls back to the English description with description_language en and a notice naming French', async () => {
+    const { out, text } = await get({ ich_ref: '1002', description_language: 'fr' });
+    expect(out.description).toBe('A synthetic practice used as test data.');
+    expect(out.description_language).toBe('en');
+    expect(out.notice).toBe(
+      'UNESCO publishes no French description for this element; description is in English.',
+    );
+    expect(text).toContain('**Description (en):**\n> A synthetic practice used as test data.');
+    expect(text).toContain(`\n> ${out.notice}`);
+  });
+
+  it('reads description_fr dropped from the metadata as unpublished, never failing the load', async () => {
+    useHub({
+      fields: { ich001: fieldsWithout('ich001', ['description_fr']) },
+      rows: { ich001: withoutKeys(ICH_ROWS, ['description_fr']) },
+    });
+    const { out } = await get({ ich_ref: '1001', description_language: 'fr' });
+    expect(out).toMatchObject({
+      description: 'First paragraph.\n\nSecond paragraph.',
+      description_language: 'en',
+      notice: 'UNESCO publishes no French description for this element; description is in English.',
+    });
+  });
+
+  it.each(['es', 'zh', 'de', 'french', 2])(
+    'rejects description_language %j as invalid arguments',
+    async (description_language) => {
+      const error = errorOf(
+        await runToolContract(tool, { ich_ref: '1001', description_language } as never),
+      );
+      expect(error.code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(error.data?.reason).toBe('invalid_arguments');
+    },
+  );
 });
 
 describe('unesco_get_intangible_heritage_element — format() parity and text safety', () => {
