@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.1](changelog/0.2.x/0.2.1.md) — 2026-10-17
+
+The site and intangible heritage get tools take description_language, limit and max_components above their per-call cap are served at the cap, a rejected Data Hub export reports as non-retryable, and near matching, entity-encoded reserve websites, and malformed-cursor recovery are fixed.
+
 ## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-10-02
 
 UNESCO Global Geoparks join as a fourth dataset with search, get, and resource surfaces; unesco_search_sites matches near through a site's components, and the site, reserve, and geopark searches can leave row text out with include_description.
