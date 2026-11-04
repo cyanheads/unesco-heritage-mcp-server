@@ -39,8 +39,7 @@ describe('ISO_3166_PAIRS', () => {
   it('carries every code the synthetic fixtures use', () => {
     const codes = new Set<string>();
     for (const row of WHC_ROWS) {
-      const iso = row.iso_codes as string | null;
-      for (const c of iso?.split(',') ?? []) codes.add(c.trim());
+      for (const c of (row.iso_codes as string[] | null) ?? []) codes.add(c);
     }
     for (const row of ICH_ROWS) for (const c of row.countries as string[]) codes.add(c);
     for (const row of MAB_ROWS) codes.add(row.iso2 as string);

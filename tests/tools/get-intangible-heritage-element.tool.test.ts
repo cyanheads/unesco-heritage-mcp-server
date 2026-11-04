@@ -113,6 +113,17 @@ describe('unesco_get_intangible_heritage_element — record', () => {
     expect(text).toContain('- **Multinational:** No');
   });
 
+  it('carries a descriptive caption longer than a name whole, on both surfaces', async () => {
+    const caption = `${'Dancers in red cloaks circle the fire at the village square. '.repeat(33)}End`;
+    expect(caption.length).toBeGreaterThan(2_000);
+    useHub({
+      rows: { ich001: [ichRow({ ich_public_ref: '114', main_image_caption_en: caption })] },
+    });
+    const { out, text } = await get({ ich_ref: '114' });
+    expect(out.image?.caption).toBe(caption);
+    expect(text).toContain(`Caption: ${caption}\n`);
+  });
+
   it('omits caption, copyright, and author from the image when UNESCO records none', async () => {
     const { out, text } = await get({ ich_ref: '1003' });
     expect(out.image).toEqual({ url: 'https://ich.unesco.org/img/photo/thumb/9000.jpg' });
@@ -129,7 +140,13 @@ describe('unesco_get_intangible_heritage_element — record', () => {
         ich001: [
           ichRow({
             ich_public_ref: '1',
-            whc_sites: JSON.stringify([{ ref: '7', name_en: 'A <em>Tagged</em> Site' }]),
+            whc_sites: JSON.stringify([
+              {
+                ref: '',
+                name_en: 'A <em>Tagged</em> Site',
+                url: 'https://whc.unesco.org/en/list/7',
+              },
+            ]),
           }),
         ],
       },
@@ -326,6 +343,16 @@ describe('unesco_get_intangible_heritage_element — upstream failure classes', 
     ['an unknown list', { type_of_element_en: 'Unlisted' }],
     ['a non-alpha-2 country', { countries: ['FRA'] }],
     ['a malformed whc_sites string', { whc_sites: '{not json' }],
+    ['a site link without a url', { whc_sites: JSON.stringify([{ ref: '566', name_en: 'A' }]) }],
+    [
+      'a site link whose url names no site',
+      {
+        whc_sites: JSON.stringify([
+          { ref: '566', name_en: 'A', url: 'https://whc.unesco.org/en/list/' },
+        ]),
+      },
+    ],
+    ['a caption past 65,536 characters', { main_image_caption_en: 'a'.repeat(65_537) }],
     ['a missing description', { description_en: null }],
   ])('reports a row with %s as snapshot_unavailable', async (_label, overrides) => {
     useHub({ rows: { ich001: [ichRow(overrides)] } });
@@ -498,7 +525,9 @@ describe('unesco_get_intangible_heritage_element — format() parity and text sa
             description_en: 'First line.\n\n## Not A Heading\n- not a list\r\nTail',
             concepts_primary_names: ['Line\nOne', 'Two\r\n- item'],
             concepts_secondary_names: ['Sec\r\n# Heading'],
-            whc_sites: JSON.stringify([{ ref: '5', name_en: 'Site\r\n## Name' }]),
+            whc_sites: JSON.stringify([
+              { ref: '', name_en: 'Site\r\n## Name', url: 'https://whc.unesco.org/en/list/5' },
+            ]),
             main_image_caption_en: 'Caption\nSecond',
             main_image_copyright: 'Owner\r\n**bold**',
             main_image_author: 'Author\nName',

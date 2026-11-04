@@ -47,7 +47,9 @@ describe('buildElementRecord', () => {
       countries: ['FR', 'BE'],
       concepts_primary_names: ['A'],
       concepts_secondary_names: ['B', 'C'],
-      whc_sites: JSON.stringify([{ ref: 7, name_en: 'Site' }]),
+      whc_sites: JSON.stringify([
+        { ref: '', name_en: 'Site', url: 'https://whc.unesco.org/en/list/7' },
+      ]),
     });
     expect(buildElementRecord(source)).toEqual({
       ich_ref: '55',

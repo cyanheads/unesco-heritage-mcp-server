@@ -45,6 +45,7 @@ await createApp({
     biosphereReserveResource,
     geoparkResource,
   ],
+  skills: 'skills',
   setup() {
     initUnescoDataHubService();
   },

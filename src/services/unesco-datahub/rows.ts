@@ -3,9 +3,8 @@
  * `ich001`, `mab001`, and `eg0001` (exactly the selected keys: the allowlist,
  * less any optional field the dataset's metadata no longer lists), the dataset
  * metadata schema, the edge parsers (text and URL entity decoding, criteria
- * and the criterion (vi) inference, the pseudo-JSON `components_list`, the
- * `whc_sites` JSON string, the year lists, booleans), and the row → domain
- * mappers.
+ * and the criterion (vi) inference, the `components_list` and `whc_sites` JSON
+ * strings, the year lists, booleans), and the row → domain mappers.
  * @module services/unesco-datahub/rows
  */
 
@@ -180,13 +179,32 @@ type WithOptional<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
 
 const TrueFalse = z.enum(['True', 'False']);
 const Year = z.string().regex(/^\d{4}$/);
+/** A `mab001` / `eg0001` point. */
 const GeoPoint = z.object({ lon: z.number(), lat: z.number() }).strict();
+/**
+ * A `whc001` `coordinates` value (a `geo_shape`): a GeoJSON Feature whose
+ * MultiPoint holds one `[lon, lat]` position per component, in
+ * `components_list` order.
+ */
+const SiteGeometry = z
+  .object({
+    type: z.literal('Feature'),
+    geometry: z
+      .object({
+        type: z.literal('MultiPoint'),
+        coordinates: z.array(z.tuple([z.number(), z.number()])).min(1),
+      })
+      .strict(),
+    properties: z.object({}).strict(),
+  })
+  .strict();
 const CRITERIA_TXT = /^(\((?:i|ii|iii|iv|v|vi|vii|viii|ix|x)\))+$/;
 
 /**
  * Length bounds on upstream strings, in characters: names, credits, and short
- * lists; descriptions, statements, and narratives; the pseudo-JSON component
- * list; URLs. A longer value fails the row, and with it the refresh.
+ * lists; descriptions, statements, narratives, and image captions; the
+ * `components_list` JSON; URLs. A longer value fails the row, and with it the
+ * refresh.
  */
 const ShortText = z.string().max(2_000);
 const FreeText = z.string().max(65_536);
@@ -212,7 +230,10 @@ export const WhcRowSchema = z
     category: z.enum(CATEGORIES),
     criteria_txt: z.string().regex(CRITERIA_TXT).nullable(),
     states_names: z.array(ShortText).min(1),
-    iso_codes: ShortText.regex(/^[A-Z]{2}(?:,\s*[A-Z]{2})*$/).nullable(),
+    iso_codes: z
+      .array(z.string().regex(/^[A-Z]{2}$/))
+      .min(1)
+      .nullable(),
     region: z.enum(REGIONS),
     transboundary: TrueFalse,
     date_inscribed: Year,
@@ -223,7 +244,7 @@ export const WhcRowSchema = z
       .regex(/^Y \d{4}$/)
       .nullable(),
     area_hectares: z.number().nullable(),
-    coordinates: GeoPoint.nullable(),
+    coordinates: SiteGeometry.nullable(),
     components_count: z.number().int().nonnegative(),
     components_list: ComponentsText.nullable(),
     main_image_url: UrlText.nullable(),
@@ -251,7 +272,7 @@ export const IchRowSchema = z
     concepts_secondary_names: z.array(ShortText).nullable(),
     whc_sites: FreeText.nullable(),
     main_image_url: UrlText,
-    main_image_caption_en: ShortText.nullable(),
+    main_image_caption_en: FreeText.nullable(),
     main_image_copyright: ShortText.nullable(),
     main_image_author: ShortText.nullable(),
   })
@@ -358,22 +379,34 @@ export const DatasetMetaSchema = z.object({
   }),
 });
 
+/** A World Heritage List page, `https://whc.unesco.org/en/list/{id_no}`. */
+const WHC_LIST_URL = /^https:\/\/whc\.unesco\.org\/en\/list\/[1-9]\d*$/;
+
+/**
+ * The `whc_sites` links. A link's `id_no` is the last segment of its `url`;
+ * `ref` (served empty) is not read, so its value is not checked.
+ */
 const WhcSiteLinksSchema = z.array(
   z
     .object({
-      ref: z.union([
-        z
-          .string()
-          .trim()
-          .regex(/^[1-9]\d*$/),
-        z.number().int().positive(),
-      ]),
+      ref: z.unknown().optional(),
       name_en: z.string(),
       name_fr: z.string().nullable().optional(),
-      url: z.string().nullable().optional(),
+      url: z.string().regex(WHC_LIST_URL),
     })
     .strict(),
 );
+
+/**
+ * One `components_list` entry. Stripping rather than strict, so a key UNESCO
+ * adds is ignored instead of skipping every component.
+ */
+const ComponentEntrySchema = z.object({
+  name: z.string(),
+  ref: z.string().trim().min(1),
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+});
 
 /* ------------------------------------------------------------------ */
 /* Edge parsers                                                        */
@@ -457,69 +490,34 @@ function sortCriteria(codes: Iterable<CriterionCode>): CriterionCode[] {
   return CRITERIA_CODES.filter((c) => set.has(c));
 }
 
-const NAME_KEY = 'name: ';
-const REF_KEY = ', ref: ';
-const LATITUDE_KEY = ', latitude: ';
-const LONGITUDE_KEY = ', longitude: ';
-const DECIMAL = /^-?\d+(?:\.\d+)?$/;
-
 /**
- * Splits one `components_list` entry, `name: …, ref: …, latitude: …,
- * longitude: …`, from the right: the last `, longitude: `, then the last
- * `, latitude: ` before it, then the last `, ref: ` before that, with both
- * coordinates decimal. Taking the last key sequence lets a name hold commas or
- * key text, and keeps the split linear in the entry's length.
- */
-function splitComponentPart(
-  part: string,
-): { name: string; ref: string; latitude: string; longitude: string } | undefined {
-  if (!part.startsWith(NAME_KEY)) return;
-  const longitudeAt = part.lastIndexOf(LONGITUDE_KEY);
-  if (longitudeAt < 0) return;
-  const latitudeAt = part.lastIndexOf(LATITUDE_KEY, longitudeAt - LATITUDE_KEY.length);
-  if (latitudeAt < 0) return;
-  const refAt = part.lastIndexOf(REF_KEY, latitudeAt - REF_KEY.length);
-  if (refAt < NAME_KEY.length) return;
-  const latitude = part.slice(latitudeAt + LATITUDE_KEY.length, longitudeAt);
-  const longitude = part.slice(longitudeAt + LONGITUDE_KEY.length);
-  if (!DECIMAL.test(latitude) || !DECIMAL.test(longitude)) return;
-  return {
-    name: part.slice(NAME_KEY.length, refAt),
-    ref: part.slice(refAt + REF_KEY.length, latitudeAt),
-    latitude,
-    longitude,
-  };
-}
-
-/**
- * Parses UNESCO's pseudo-JSON `components_list`. Entries that don't split (or
- * with an empty ref, or out-of-range coordinates) are skipped and counted.
+ * Parses the `components_list` JSON string, `[{ name, ref, latitude, longitude }]`
+ * (`null` lists no components). Text that is not a JSON array throws, failing
+ * the row. An entry with a missing or mistyped key, a blank ref, or a
+ * coordinate outside ±90/±180 is skipped and counted; a name blank after
+ * cleanup is left out.
  */
 export function parseComponentsList(list: string | null): {
   components: SiteComponent[];
   parts: number;
   unparsed: number;
 } {
-  if (list === null || list.trim() === '') return { components: [], parts: 0, unparsed: 0 };
-  let body = list.trim();
-  if (body.startsWith('{')) body = body.slice(1);
-  if (body.endsWith('}')) body = body.slice(0, -1);
-  const parts = body.split('}, {');
+  if (list === null) return { components: [], parts: 0, unparsed: 0 };
+  const entries: unknown = JSON.parse(list);
+  if (!Array.isArray(entries)) throw new Error('components_list is not a JSON array.');
   const components: SiteComponent[] = [];
   let unparsed = 0;
-  for (const part of parts) {
-    const fields = splitComponentPart(part);
-    const ref = fields?.ref.trim();
-    const latitude = Number(fields?.latitude);
-    const longitude = Number(fields?.longitude);
-    if (!fields || !ref || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+  for (const entry of entries) {
+    const parsed = ComponentEntrySchema.safeParse(entry);
+    if (!parsed.success) {
       unparsed += 1;
       continue;
     }
-    const name = cleanText(fields.name);
+    const { ref, latitude, longitude } = parsed.data;
+    const name = cleanText(parsed.data.name);
     components.push({ ref, latitude, longitude, ...(name ? { name } : {}) });
   }
-  return { components, parts: parts.length, unparsed };
+  return { components, parts: entries.length, unparsed };
 }
 
 /** Every four-digit group in a text, as numbers. */
@@ -547,11 +545,18 @@ export function parseFusedYears(value: number | null): number[] {
   return years;
 }
 
-/** Parses the `whc_sites` JSON string into `{ id_no, name }` links. */
+/**
+ * Parses the `whc_sites` JSON string into `{ id_no, name }` links, each
+ * `id_no` read from its link's World Heritage List `url`. A link without one
+ * throws, failing the row.
+ */
 export function parseWhcSites(json: string | null): { id_no: string; name: string }[] {
   if (json === null) return [];
   const links = WhcSiteLinksSchema.parse(JSON.parse(json));
-  return links.map((link) => ({ id_no: String(link.ref), name: cleanText(link.name_en) }));
+  return links.map((link) => ({
+    id_no: link.url.slice(link.url.lastIndexOf('/') + 1),
+    name: cleanText(link.name_en),
+  }));
 }
 
 /**
@@ -596,6 +601,9 @@ export function toHeritageSite(row: WhcRow): { site: HeritageSite; componentPart
   const inferred: CriterionCode[] =
     !recorded.includes('vi') && justificationNamesVi(justification) ? ['vi'] : [];
   const { components, parts, unparsed } = parseComponentsList(row.components_list);
+  // Only a one-position MultiPoint is a recorded point; a serial site's positions are its components.
+  const positions = row.coordinates?.geometry.coordinates ?? [];
+  const point = positions.length === 1 ? positions[0] : undefined;
   const secondary = yearsIn(row.secondary_dates).slice(1);
   const dangerYear = row.danger_list ? Number(row.danger_list.slice(2)) : undefined;
   const names = {
@@ -621,12 +629,7 @@ export function toHeritageSite(row: WhcRow): { site: HeritageSite; componentPart
     names,
     category: row.category,
     states: row.states_names.map(cleanText),
-    country_codes: row.iso_codes
-      ? row.iso_codes
-          .split(',')
-          .map((c) => c.trim())
-          .filter(Boolean)
-      : [],
+    country_codes: row.iso_codes ?? [],
     region: row.region,
     transboundary: row.transboundary === 'True',
     inscribed_year: Number(row.date_inscribed),
@@ -636,7 +639,7 @@ export function toHeritageSite(row: WhcRow): { site: HeritageSite; componentPart
     in_danger: row.danger === 'True',
     ...(dangerYear !== undefined ? { danger_listed_year: dangerYear } : {}),
     ...(row.area_hectares !== null ? { area_hectares: row.area_hectares } : {}),
-    ...(row.coordinates ? { latitude: row.coordinates.lat, longitude: row.coordinates.lon } : {}),
+    ...(point ? { latitude: point[1], longitude: point[0] } : {}),
     ...(description ? { description } : {}),
     description_translations: translations,
     ...(justification ? { justification } : {}),

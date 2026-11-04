@@ -5,21 +5,22 @@
  * @module tests/fixtures/rows
  */
 
-/** One component part as UNESCO's pseudo-JSON `components_list` writes it. */
+/** One `components_list` entry as UNESCO's JSON writes it. */
 export interface ComponentSpec {
-  latitude: number | string;
-  longitude: number | string;
+  latitude: number;
+  longitude: number;
   name: string;
   ref: string;
 }
 
-/** Builds the pseudo-JSON `components_list` string from component specs. */
+/** Builds the `components_list` JSON string from component specs. */
 export function componentsList(components: readonly ComponentSpec[]): string {
-  return `{${components
-    .map(
-      (c) => `name: ${c.name}, ref: ${c.ref}, latitude: ${c.latitude}, longitude: ${c.longitude}`,
-    )
-    .join('}, {')}}`;
+  return JSON.stringify(components);
+}
+
+/** A `whc001` `coordinates` value: a GeoJSON Feature with one MultiPoint position per `[lon, lat]`. */
+export function multiPoint(...points: [lon: number, lat: number][]): Record<string, unknown> {
+  return { type: 'Feature', geometry: { coordinates: points, type: 'MultiPoint' }, properties: {} };
 }
 
 /** A complete `whc001` export row with every allowlisted key; override what a test needs. */
@@ -42,7 +43,7 @@ export function whcRow(overrides: Record<string, unknown> = {}): Record<string, 
     category: 'Cultural',
     criteria_txt: '(iv)',
     states_names: ['France'],
-    iso_codes: 'FR',
+    iso_codes: ['FR'],
     region: 'Europe and North America',
     transboundary: 'False',
     date_inscribed: '1990',
@@ -50,7 +51,7 @@ export function whcRow(overrides: Record<string, unknown> = {}): Record<string, 
     danger: 'False',
     danger_list: null,
     area_hectares: 10,
-    coordinates: { lon: 2, lat: 48 },
+    coordinates: multiPoint([2, 48]),
     components_count: 1,
     components_list: componentsList([
       { name: 'Main Part', ref: '900-001', latitude: 48, longitude: 2 },
@@ -163,7 +164,7 @@ const FILLER_SITES = Array.from({ length: 30 }, (_, i) => {
     date_inscribed: String(1980 + (i % 20)),
     secondary_dates: String(1980 + (i % 20)),
     area_hectares: 100 - i,
-    coordinates: { lon: 2, lat: 48 + (i + 1) * 0.01 },
+    coordinates: multiPoint([2, 48 + (i + 1) * 0.01]),
     components_count: 0,
     components_list: null,
     main_image_url: null,
@@ -192,7 +193,7 @@ export const WHC_ROWS: Record<string, unknown>[] = [
     date_inscribed: '1988',
     secondary_dates: '1988, 2005,2012',
     area_hectares: 120.5,
-    coordinates: { lon: 2, lat: 48 },
+    coordinates: multiPoint([2, 48]),
     components_count: 3,
     components_list: componentsList([
       { name: 'North Gate, Upper Ward', ref: '101-001', latitude: 48.01, longitude: 2.01 },
@@ -211,14 +212,14 @@ export const WHC_ROWS: Record<string, unknown>[] = [
     category: 'Natural',
     criteria_txt: '(ix)(x)',
     states_names: ['Germany', 'Poland'],
-    iso_codes: 'DE, PL',
+    iso_codes: ['DE', 'PL'],
     transboundary: 'True',
     date_inscribed: '1992',
     secondary_dates: '1992, 2007',
     danger: 'True',
     danger_list: 'Y 2015',
     area_hectares: 5000,
-    coordinates: { lon: 14.5, lat: 52.5 },
+    coordinates: multiPoint([14.5, 52.5]),
     components_count: 2,
     components_list: componentsList([
       { name: 'West Tract', ref: '102-001', latitude: 52.5, longitude: 14.4 },
@@ -233,7 +234,7 @@ export const WHC_ROWS: Record<string, unknown>[] = [
     justification_en: 'Criterion (vi): synthetic association with events.',
     criteria_txt: null,
     states_names: ['Ethiopia'],
-    iso_codes: 'ET',
+    iso_codes: ['ET'],
     region: 'Africa',
     date_inscribed: '2004',
     secondary_dates: '2004',
@@ -253,12 +254,12 @@ export const WHC_ROWS: Record<string, unknown>[] = [
       'Criterion (i): synthetic masterpiece.\n\nCriterion (iii): synthetic testimony.\n\nCriterion (vi): synthetic association.',
     criteria_txt: '(i)(iii)',
     states_names: ['Japan'],
-    iso_codes: 'JP',
+    iso_codes: ['JP'],
     region: 'Asia and the Pacific',
     date_inscribed: '2001',
     secondary_dates: '2001',
     area_hectares: 40,
-    coordinates: { lon: 139.7, lat: 35.7 },
+    coordinates: multiPoint([139.7, 35.7]),
     components_count: 0,
     components_list: null,
   }),
@@ -271,14 +272,14 @@ export const WHC_ROWS: Record<string, unknown>[] = [
     justification_en: null,
     criteria_txt: '(iii)',
     states_names: ['Peru'],
-    iso_codes: 'PE',
+    iso_codes: ['PE'],
     region: 'Latin America and the Caribbean',
     date_inscribed: '1995',
     secondary_dates: '1995',
     area_hectares: null,
     coordinates: null,
     components_count: 0,
-    components_list: null,
+    components_list: '[]',
     main_image_url: null,
     main_image_copyright: null,
     main_image_author: null,
@@ -297,7 +298,7 @@ export const WHC_ROWS: Record<string, unknown>[] = [
     date_inscribed: '2010',
     secondary_dates: '2010',
     area_hectares: 900,
-    coordinates: { lon: 10, lat: 30 },
+    coordinates: multiPoint([10, 30]),
     components_count: 0,
     components_list: null,
   }),
@@ -311,11 +312,11 @@ export const WHC_ROWS: Record<string, unknown>[] = [
     justification_en: null,
     criteria_txt: '(iv)',
     states_names: ['Germany'],
-    iso_codes: 'DE',
+    iso_codes: ['DE'],
     date_inscribed: '1999',
     secondary_dates: '1999',
     area_hectares: 3,
-    coordinates: { lon: 8.7, lat: 50.1 },
+    coordinates: multiPoint([8.7, 50.1]),
     components_count: 1,
     components_list: componentsList([
       { name: 'Span <em>One</em>', ref: '107-001', latitude: 50.1, longitude: 8.7 },
@@ -329,17 +330,23 @@ export const WHC_ROWS: Record<string, unknown>[] = [
     short_description_en: 'A synthetic site with awkward component entries.',
     justification_en: null,
     states_names: ['Germany'],
-    iso_codes: 'DE',
+    iso_codes: ['DE'],
     date_inscribed: '2003',
     secondary_dates: '2003',
-    coordinates: { lon: 9, lat: 51 },
+    coordinates: multiPoint([9, 51]),
     components_count: 5,
-    components_list:
-      '{name: Stone Gate, North, ref: 108-001, latitude: 10.5, longitude: 20.5}, ' +
-      '{name: Odd, ref: name, latitude: 1, longitude: 2 gate, ref: 108-002, latitude: 11.25, longitude: 21.5}, ' +
-      '{name: , ref: 108-003, latitude: 12, longitude: 22}, ' +
-      '{name: Spaced Ref, ref: 108-004 , latitude: 13, longitude: 23}, ' +
-      '{name: Bad Lat, ref: 108-005, latitude: 95, longitude: 24}',
+    components_list: componentsList([
+      { name: 'Stone Gate, North', ref: '108-001', latitude: 10.5, longitude: 20.5 },
+      {
+        name: 'Odd, ref: name, latitude: 1, longitude: 2 gate',
+        ref: '108-002',
+        latitude: 11.25,
+        longitude: 21.5,
+      },
+      { name: '', ref: '108-003', latitude: 12, longitude: 22 },
+      { name: 'Spaced Ref', ref: '108-004 ', latitude: 13, longitude: 23 },
+      { name: 'Bad Lat', ref: '108-005', latitude: 95, longitude: 24 },
+    ]),
   }),
   whcRow({
     id_no: '109',
@@ -349,7 +356,7 @@ export const WHC_ROWS: Record<string, unknown>[] = [
     justification_en: null,
     date_inscribed: '2006',
     secondary_dates: '2006',
-    coordinates: { lon: 10, lat: 40 },
+    coordinates: multiPoint([10, 40]),
     components_count: 25,
     components_list: componentsList(MANY_PARTS),
   }),
@@ -384,7 +391,7 @@ const nearSite = (id: string, name: string, overrides: Record<string, unknown>) 
  */
 export const NEAR_SITE_ROWS: Record<string, unknown>[] = [
   nearSite('501', 'Farspan Serial Ensemble', {
-    coordinates: { lon: 10, lat: 10 },
+    coordinates: multiPoint([10, 10]),
     components_count: 3,
     components_list: componentsList([
       { name: 'Far Annex', ref: '501-001', latitude: 10, longitude: 10.1 },
@@ -412,31 +419,183 @@ export const NEAR_SITE_ROWS: Record<string, unknown>[] = [
     main_image_author: null,
   }),
   nearSite('504', 'Mirrorpoint Site', {
-    coordinates: { lon: 5, lat: 60.3 },
+    coordinates: multiPoint([5, 60.3]),
     components_count: 1,
     components_list: componentsList([
       { name: 'Mirror Part', ref: '504-001', latitude: 60.3, longitude: 5 },
     ]),
   }),
   nearSite('505', 'Keystone Site', {
-    coordinates: { lon: 5, lat: 60.02 },
+    coordinates: multiPoint([5, 60.02]),
     components_count: 1,
     components_list: componentsList([
       { name: 'Outlier', ref: '505-001', latitude: 61, longitude: 5 },
     ]),
   }),
   nearSite('506', 'Roundtie Site', {
-    coordinates: { lon: 5, lat: 60.1 },
+    coordinates: multiPoint([5, 60.1]),
     components_count: 1,
     components_list: componentsList([
       { name: 'Close Second', ref: '506-001', latitude: 60.0997, longitude: 5 },
     ]),
   }),
   nearSite('507', 'Drawbridge Site', {
-    coordinates: { lon: 5, lat: 60.25 },
+    coordinates: multiPoint([5, 60.25]),
     components_count: 1,
     components_list: componentsList([
       { name: 'Gatehouse', ref: '507-001', latitude: 60.04, longitude: 5 },
+    ]),
+  }),
+];
+
+/** Fifteen `components_list` entries of 805 Frontier Wall: twelve name `fort`, three `gate`. */
+const FRONTIER_PARTS: ComponentSpec[] = [
+  { name: 'North Fort', ref: '805-001', latitude: 50.01, longitude: 7 },
+  { name: 'Gate House', ref: '805-002', latitude: 50.02, longitude: 7 },
+  { name: 'Fort Gate East', ref: '805-003', latitude: 50.03, longitude: 7 },
+  { name: 'Mill Farm', ref: '805-004', latitude: 50.04, longitude: 7 },
+  { name: 'Fortlet Five', ref: '805-005', latitude: 50.05, longitude: 7 },
+  { name: 'Fort Six', ref: '805-006', latitude: 50.06, longitude: 7 },
+  { name: '', ref: '805-007', latitude: 50.07, longitude: 7 },
+  { name: 'Fort Eight', ref: '805-008', latitude: 50.08, longitude: 7 },
+  { name: 'Fort Nine', ref: '805-009', latitude: 50.09, longitude: 7 },
+  { name: 'West Fort Gate', ref: '805-010', latitude: 50.1, longitude: 7 },
+  { name: 'Fort Eleven', ref: '805-011', latitude: 50.11, longitude: 7 },
+  { name: 'Fort Twelve', ref: '805-012', latitude: 50.12, longitude: 7 },
+  { name: 'Fort Thirteen', ref: '805-013', latitude: 50.13, longitude: 7 },
+  { name: 'Fort Fourteen', ref: '805-014', latitude: 50.14, longitude: 7 },
+  // Unreadable (latitude out of range), so the parser skips it and it never matches.
+  { name: 'Fort Hidden', ref: '805-015', latitude: 95, longitude: 7 },
+  { name: 'Fort Sixteen', ref: '805-016', latitude: 50.16, longitude: 7 },
+];
+
+/**
+ * Sites whose component names exercise the component keyword tier. 801 names
+ * `velkaro` and `hall` only in a component, `aldenmoor` in its own names and a
+ * component, and `architect` in its description; 802 names `tarvel` only in a
+ * component; 803's component carries `unity chapel`, which 804's statement of
+ * Outstanding Universal Value also holds; 805 has twelve readable components
+ * named `fort` (three also `gate`), one unreadable, and nameless ones; 806 has
+ * exactly ten named `ward`; 807–811 carry `tower` in a name (807), a component
+ * (808–810), or a description (811); 812 carries `hall` in its name.
+ */
+export const COMPONENT_TIER_ROWS: Record<string, unknown>[] = [
+  whcRow({
+    id_no: '801',
+    name_en: 'Aldenmoor Works',
+    name_fr: "Œuvres d'Aldenmoor",
+    short_description_en: 'Buildings by the synthetic architect Aldenmoor.',
+    justification_en: 'Criterion (ii): synthetic modernism.',
+    coordinates: multiPoint([24.9, 60.1], [25, 60.2], [25.1, 60.3]),
+    components_count: 3,
+    components_list: componentsList([
+      { name: 'Aldenmoor Studio, Brask', ref: '801-001', latitude: 60.1, longitude: 24.9 },
+      { name: 'Velkaro Hall, Brask', ref: '801-002', latitude: 60.2, longitude: 25 },
+      { name: 'Summer House', ref: '801-003', latitude: 60.3, longitude: 25.1 },
+    ]),
+  }),
+  whcRow({
+    id_no: '802',
+    name_en: 'Meridian Survey Arc',
+    name_fr: 'Arc Géodésique Méridien',
+    short_description_en: 'A synthetic chain of survey points.',
+    justification_en: null,
+    coordinates: multiPoint([26, 58.5], [27, 59]),
+    components_count: 2,
+    components_list: componentsList([
+      { name: 'Station Orsk', ref: '802-017', latitude: 58.5, longitude: 26 },
+      { name: 'KATKO Tarvel', ref: '802-018', latitude: 59, longitude: 27 },
+    ]),
+  }),
+  whcRow({
+    id_no: '803',
+    name_en: 'Prairie Architecture of Hollin Vane',
+    name_fr: 'Architecture des Prairies de Hollin Vane',
+    short_description_en: 'A synthetic group of prairie buildings.',
+    justification_en: null,
+    coordinates: multiPoint([-87.8, 41.9], [-87.6, 41.8]),
+    components_count: 2,
+    components_list: componentsList([
+      { name: 'Unity Chapel', ref: '803rev-001', latitude: 41.9, longitude: -87.8 },
+      { name: 'Robin House', ref: '803rev-002', latitude: 41.8, longitude: -87.6 },
+    ]),
+  }),
+  whcRow({
+    id_no: '804',
+    name_en: 'Lakeside Pavilion',
+    name_fr: 'Pavillon du Lac',
+    short_description_en: 'A synthetic pavilion.',
+    justification_en: 'Criterion (iv): a synthetic unity of chapel forms.',
+  }),
+  whcRow({
+    id_no: '805',
+    name_en: 'Frontier Wall',
+    name_fr: 'Mur Frontalier',
+    short_description_en: 'A synthetic frontier wall.',
+    justification_en: null,
+    coordinates: multiPoint([7, 50.01], [7, 50.16]),
+    components_count: 17,
+    components_list: componentsList([
+      ...FRONTIER_PARTS,
+      { name: '&nbsp;', ref: '805-017', latitude: 50.17, longitude: 7 },
+    ]),
+  }),
+  whcRow({
+    id_no: '806',
+    name_en: 'Tenfold Terraces',
+    name_fr: 'Terrasses Décuples',
+    short_description_en: 'A synthetic terraced town.',
+    justification_en: null,
+    coordinates: multiPoint([13, 43], [13.1, 43]),
+    components_count: 11,
+    components_list: componentsList([
+      ...Array.from({ length: 10 }, (_, i) => ({
+        name: `Terrace Ward ${i + 1}`,
+        ref: `806-${String(i + 1).padStart(3, '0')}`,
+        latitude: 43,
+        longitude: 13 + i * 0.01,
+      })),
+      { name: 'Lookout', ref: '806-011', latitude: 43.1, longitude: 13 },
+    ]),
+  }),
+  whcRow({ id_no: '807', name_en: 'Tower Hill', name_fr: 'Colline de la Tour' }),
+  whcRow({
+    id_no: '808',
+    name_en: 'Coastal Lights',
+    name_fr: 'Feux Côtiers',
+    components_list: componentsList([
+      { name: 'Tower One', ref: '808-001', latitude: 48, longitude: 2 },
+    ]),
+  }),
+  whcRow({
+    id_no: '809',
+    name_en: 'Harbour Lights',
+    name_fr: 'Feux du Port',
+    components_list: componentsList([
+      { name: 'Old Tower', ref: '809-001', latitude: 48, longitude: 2 },
+    ]),
+  }),
+  whcRow({
+    id_no: '810',
+    name_en: 'River Lights',
+    name_fr: 'Feux du Fleuve',
+    components_list: componentsList([
+      { name: 'Tower Bridge', ref: '810-001', latitude: 48, longitude: 2 },
+    ]),
+  }),
+  whcRow({
+    id_no: '811',
+    name_en: 'Inland Works',
+    name_fr: "Ouvrages de l'Intérieur",
+    short_description_en: 'A synthetic tower ensemble.',
+  }),
+  whcRow({
+    id_no: '812',
+    name_en: 'Hall of Records',
+    name_fr: 'Salle des Archives',
+    coordinates: multiPoint([25, 61]),
+    components_list: componentsList([
+      { name: 'Hall of Records', ref: '812-001', latitude: 61, longitude: 25 },
     ]),
   }),
 ];
@@ -454,12 +613,17 @@ export const ICH_ROWS: Record<string, unknown>[] = [
     concepts_secondary_names: ['Community', 'Ritual'],
     whc_sites: JSON.stringify([
       {
-        ref: '101',
+        ref: '',
         name_en: 'Alderfen <em>Old</em> Town',
         name_fr: 'Vieille Ville',
         url: 'https://whc.unesco.org/en/list/101',
       },
-      { ref: 102, name_en: 'Brindle Frontier Forest', name_fr: null, url: null },
+      {
+        ref: '',
+        name_en: 'Brindle Frontier Forest',
+        name_fr: null,
+        url: 'https://whc.unesco.org/en/list/102',
+      },
     ]),
     inscription_year: '2010',
   }),

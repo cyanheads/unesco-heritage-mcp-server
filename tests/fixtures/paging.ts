@@ -5,7 +5,7 @@
  * @module tests/fixtures/paging
  */
 
-import { egRow, ichRow, mabRow, whcRow } from './rows.js';
+import { egRow, ichRow, mabRow, multiPoint, whcRow } from './rows.js';
 
 /**
  * `count` single-point sites with ids 3001…, named `Loomvale Site NNN` so name
@@ -21,7 +21,7 @@ export function manyWhcRows(count: number): Record<string, unknown>[] {
       short_description_en: `Synthetic site number ${i + 1}.`,
       date_inscribed: String(1980 + (i % 20)),
       secondary_dates: String(1980 + (i % 20)),
-      coordinates: { lon: 2, lat: 48 + i * 0.01 },
+      coordinates: multiPoint([2, 48 + i * 0.01]),
       components_count: 0,
       components_list: null,
     });
@@ -58,7 +58,14 @@ export function manyIchRows(count: number): Record<string, unknown>[] {
       http_url_en: `https://ich.unesco.org/en/${ICH_ACRONYMS[list]}/${ref.padStart(5, '0')}`,
       whc_sites:
         i < 8
-          ? JSON.stringify([{ ref: '101', name_en: 'Alderfen Old Town', name_fr: null }])
+          ? JSON.stringify([
+              {
+                ref: '',
+                name_en: 'Alderfen Old Town',
+                name_fr: null,
+                url: 'https://whc.unesco.org/en/list/101',
+              },
+            ])
           : null,
     });
   });

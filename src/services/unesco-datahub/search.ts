@@ -57,18 +57,30 @@ export function wordMatches(word: string, tier: string): boolean {
 }
 
 /**
+ * Each query word's first matching tier (0-based), parallel to `words`.
+ * Undefined when some word matches no tier at all.
+ */
+export function wordTiers(
+  words: readonly string[],
+  tiers: readonly string[],
+): number[] | undefined {
+  const firsts: number[] = [];
+  for (const word of words) {
+    const first = tiers.findIndex((tier) => wordMatches(word, tier));
+    if (first === -1) return;
+    firsts.push(first);
+  }
+  return firsts;
+}
+
+/**
  * The first tier (0-based) by which every query word has matched, with tiers
  * accumulating: tier k covers the fields of tiers 0…k. Undefined when some word
  * matches no tier at all.
  */
 export function matchTier(words: readonly string[], tiers: readonly string[]): number | undefined {
-  let deepest = 0;
-  for (const word of words) {
-    const first = tiers.findIndex((tier) => wordMatches(word, tier));
-    if (first === -1) return;
-    if (first > deepest) deepest = first;
-  }
-  return deepest;
+  const firsts = wordTiers(words, tiers);
+  return firsts && Math.max(0, ...firsts);
 }
 
 /** True when every word of `filter` word-prefix-matches the union of `columns`. */

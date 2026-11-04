@@ -1,9 +1,9 @@
 /**
  * @fileoverview Tests for the export-row schemas and their text length bounds,
  * the edge parsers (text cleanup, criteria and the criterion (vi) inference, the
- * components parser with its rejection count and linear-time split, the year
- * parsers, the `whc_sites` parser), and the row → domain mappers, against
- * synthetic fixture rows.
+ * `components_list` parser with its rejection count, the year parsers, the
+ * `whc_sites` parser and its linear-time url check), and the row → domain
+ * mappers, against synthetic fixture rows.
  * @module tests/services/unesco-datahub/rows.test
  */
 
@@ -37,6 +37,7 @@ import {
   egRow,
   ichRow,
   mabRow,
+  multiPoint,
   WHC_ROWS,
   whcRow,
 } from '../../fixtures/rows.js';
@@ -46,6 +47,9 @@ const whcById = (id: string) => {
   if (!row) throw new Error(`fixture ${id} missing`);
   return WhcRowSchema.parse(row);
 };
+
+/** A `whc001` MultiPoint geometry holding exactly `coordinates`, well-formed or not. */
+const geometry = (coordinates: unknown[]) => ({ type: 'MultiPoint', coordinates });
 
 /** `unit` repeated and cut to exactly `length` characters. */
 const fill = (unit: string, length: number) =>
@@ -280,8 +284,8 @@ describe('justificationNamesVi', () => {
 });
 
 describe('parseComponentsList', () => {
-  it('returns nothing for null, empty, and blank lists', () => {
-    for (const value of [null, '', '   ']) {
+  it('returns nothing for a null list and an empty JSON array', () => {
+    for (const value of [null, '[]', ' [ ] ']) {
       expect(parseComponentsList(value)).toEqual({ components: [], parts: 0, unparsed: 0 });
     }
   });
@@ -303,79 +307,132 @@ describe('parseComponentsList', () => {
     });
   });
 
-  it('keeps commas, `, ref: `, and coordinate keys inside a name (split at the last key sequence)', () => {
-    const result = parseComponentsList(
-      '{name: North Gate, Upper Ward, ref: a-1, latitude: 1.5, longitude: 2.5}, ' +
-        '{name: Odd, ref: name, latitude: 1, longitude: 2 gate, ref: a-2, latitude: 3, longitude: 4}',
-    );
-    expect(result.unparsed).toBe(0);
-    expect(result.components.map((c) => c.name)).toEqual([
+  it('keeps commas, braces, quotes, and key text inside a name as written', () => {
+    const names = [
       'North Gate, Upper Ward',
       'Odd, ref: name, latitude: 1, longitude: 2 gate',
-    ]);
-    expect(result.components.map((c) => c.ref)).toEqual(['a-1', 'a-2']);
+      'Split }, { Name',
+      'The "Old" Quay',
+    ];
+    const result = parseComponentsList(
+      componentsList(names.map((name, i) => ({ name, ref: `a-${i}`, latitude: 1, longitude: 2 }))),
+    );
+    expect(result.unparsed).toBe(0);
+    expect(result.components.map((c) => c.name)).toEqual(names);
+    expect(result.components.map((c) => c.ref)).toEqual(['a-0', 'a-1', 'a-2', 'a-3']);
   });
 
   it('accepts a comma inside a ref', () => {
-    const result = parseComponentsList('{name: N, ref: 12,3, latitude: 1, longitude: 2}');
+    const result = parseComponentsList(
+      componentsList([{ name: 'N', ref: '12,3', latitude: 1, longitude: 2 }]),
+    );
     expect(result.components).toEqual([{ name: 'N', ref: '12,3', latitude: 1, longitude: 2 }]);
   });
 
-  it('omits the name of a nameless component and trims a trailing-space ref', () => {
+  it('omits the name of a nameless or blank-after-cleanup component and trims a spaced ref', () => {
     const result = parseComponentsList(
-      '{name: , ref: n-1, latitude: 1, longitude: 2}, {name: Spaced, ref: n-2 , latitude: 3, longitude: 4}',
+      componentsList([
+        { name: '', ref: 'n-1', latitude: 1, longitude: 2 },
+        { name: 'Spaced', ref: ' n-2 ', latitude: 3, longitude: 4 },
+        { name: ' <em></em> ', ref: 'n-3', latitude: 5, longitude: 6 },
+      ]),
     );
     expect(result.components[0]).toEqual({ ref: 'n-1', latitude: 1, longitude: 2 });
-    expect(result.components[0]).not.toHaveProperty('name');
-    expect(result.components[1]?.ref).toBe('n-2');
+    expect(result.components[1]).toEqual({ name: 'Spaced', ref: 'n-2', latitude: 3, longitude: 4 });
+    expect(result.components[2]).toEqual({ ref: 'n-3', latitude: 5, longitude: 6 });
     expect(result.unparsed).toBe(0);
   });
 
-  it('strips inline tags from component names', () => {
+  it('cleans component names: inline tags stripped, entities decoded', () => {
     const result = parseComponentsList(
-      '{name: Span <em>One</em>, ref: t-1, latitude: 1, longitude: 2}',
+      componentsList([
+        { name: 'Span <em>One</em> &amp; <b>Two</b>', ref: 't-1', latitude: 1, longitude: 2 },
+      ]),
     );
-    expect(result.components[0]?.name).toBe('Span One');
+    expect(result.components[0]?.name).toBe('Span One & Two');
   });
 
   it('accepts the coordinate range limits', () => {
     const result = parseComponentsList(
-      '{name: A, ref: r, latitude: 90, longitude: 180}, {name: B, ref: s, latitude: -90, longitude: -180}',
+      componentsList([
+        { name: 'A', ref: 'r', latitude: 90, longitude: 180 },
+        { name: 'B', ref: 's', latitude: -90, longitude: -180 },
+      ]),
     );
     expect(result.components).toHaveLength(2);
     expect(result.unparsed).toBe(0);
   });
 
-  it.each([
-    ['latitude above 90', '{name: A, ref: r, latitude: 95, longitude: 10}'],
-    ['latitude below -90', '{name: A, ref: r, latitude: -90.5, longitude: 10}'],
-    ['longitude above 180', '{name: A, ref: r, latitude: 10, longitude: 181}'],
-    ['an empty ref', '{name: A, ref: , latitude: 10, longitude: 10}'],
-    ['a whitespace ref', '{name: A, ref:   , latitude: 10, longitude: 10}'],
-    ['a garbage entry', '{not a component at all}'],
-    ['a non-numeric latitude', '{name: A, ref: r, latitude: north, longitude: 10}'],
-    ['a missing longitude', '{name: A, ref: r, latitude: 10}'],
-  ])('skips and counts an entry with %s', (_label, entry) => {
-    const result = parseComponentsList(entry);
-    expect(result).toEqual({ components: [], parts: 1, unparsed: 1 });
+  it('parses an entry that carries a key UNESCO added, without the key', () => {
+    const result = parseComponentsList(
+      JSON.stringify([{ name: 'A', ref: 'r', latitude: 1, longitude: 2, area_hectares: 3 }]),
+    );
+    expect(result).toEqual({
+      components: [{ name: 'A', ref: 'r', latitude: 1, longitude: 2 }],
+      parts: 1,
+      unparsed: 0,
+    });
+  });
+
+  const entry = { name: 'A', ref: 'r', latitude: 10, longitude: 10 };
+  const { name: _name, ...nameless } = entry;
+  const { ref: _ref, ...refless } = entry;
+  const { longitude: _longitude, ...longitudeless } = entry;
+
+  it.each<[string, unknown]>([
+    ['latitude above 90', { ...entry, latitude: 95 }],
+    ['latitude below -90', { ...entry, latitude: -90.5 }],
+    ['longitude above 180', { ...entry, longitude: 181 }],
+    ['longitude below -180', { ...entry, longitude: -180.5 }],
+    ['an empty ref', { ...entry, ref: '' }],
+    ['a whitespace ref', { ...entry, ref: '   ' }],
+    ['a numeric ref', { ...entry, ref: 7 }],
+    ['a string latitude', { ...entry, latitude: '10' }],
+    ['a null longitude', { ...entry, longitude: null }],
+    ['a null name', { ...entry, name: null }],
+    ['a missing name', nameless],
+    ['a missing ref', refless],
+    ['a missing longitude', longitudeless],
+    ['a string entry', 'name: A, ref: r, latitude: 10, longitude: 10'],
+    ['a null entry', null],
+    ['an array entry', ['A', 'r', 10, 10]],
+  ])('skips and counts an entry with %s', (_label, value) => {
+    expect(parseComponentsList(JSON.stringify([value]))).toEqual({
+      components: [],
+      parts: 1,
+      unparsed: 1,
+    });
   });
 
   it('keeps the good entries around a rejected one', () => {
     const result = parseComponentsList(
-      '{name: Good1, ref: a, latitude: 1, longitude: 2}, {name: Bad, ref: b, latitude: 99, longitude: 2}, {name: Good2, ref: c, latitude: 3, longitude: 4}',
+      componentsList([
+        { name: 'Good1', ref: 'a', latitude: 1, longitude: 2 },
+        { name: 'Bad', ref: 'b', latitude: 99, longitude: 2 },
+        { name: 'Good2', ref: 'c', latitude: 3, longitude: 4 },
+      ]),
     );
     expect(result.components.map((c) => c.ref)).toEqual(['a', 'c']);
     expect(result.parts).toBe(3);
     expect(result.unparsed).toBe(1);
   });
 
-  it('counts a name containing the literal delimiter as two rejected parts', () => {
-    const result = parseComponentsList(
-      '{name: Split }, { Name, ref: r, latitude: 1, longitude: 2}',
-    );
-    expect(result.components).toEqual([]);
-    expect(result.parts).toBe(2);
-    expect(result.unparsed).toBe(2);
+  it.each([
+    ['a JSON object', '{"name":"A","ref":"r","latitude":1,"longitude":2}'],
+    ['a JSON string holding an array', '"[]"'],
+    ['JSON null', 'null'],
+    ['a JSON number', '3'],
+  ])('fails on a list that is %s, not a JSON array', (_label, list) => {
+    expect(() => parseComponentsList(list)).toThrow('components_list is not a JSON array.');
+  });
+
+  it.each([
+    ['the pseudo-JSON list', '{name: A, ref: r, latitude: 1, longitude: 2}'],
+    ['an empty string', ''],
+    ['a blank string', '   '],
+    ['a truncated array', '[{"name":"A"'],
+  ])('fails on %s, which is not JSON', (_label, list) => {
+    expect(() => parseComponentsList(list)).toThrow(SyntaxError);
   });
 
   it('parses the fixture site with awkward entries: 4 of 5 parsed, 1 rejected', () => {
@@ -386,106 +443,16 @@ describe('parseComponentsList', () => {
     expect(result.unparsed).toBe(1);
   });
 
-  it.each<[string, (length: number) => string]>([
-    ['many `, ref: ` sequences and no coordinates', (n) => `name: ${fill(', ref: ', n)}x`],
-    [
-      'many `, ref: , latitude: 1` runs and no longitude',
-      (n) => `name: ${fill(', ref: , latitude: 1', n)}x`,
-    ],
-    [
-      'many coordinate tails and a non-numeric end',
-      (n) => `name: a${fill(', ref: r, latitude: 1, longitude: 2', n)}x`,
-    ],
-  ])(
-    'reads a part with %s in linear time, up to 320k characters, and counts it unparsed',
-    (_label, part) => {
-      expectLinearTime((n) => `{${part(n)}}`, parseComponentsList, 50);
-      expect(parseComponentsList(`{${part(320_000)}}`)).toEqual({
-        components: [],
-        parts: 1,
-        unparsed: 1,
-      });
-    },
-    30_000,
-  );
-
-  it('reads a list of many small parts in linear time, up to 320k characters', () => {
-    const partsOf = (length: number) => {
-      const parts: string[] = [];
-      let size = 2;
-      while (size < length) {
-        const part = `name: c, ref: r${parts.length}, latitude: 1, longitude: 2`;
-        parts.push(part);
-        size += part.length + 4;
-      }
-      return parts;
-    };
-    const list = (length: number) => `{${partsOf(length).join('}, {')}}`;
-    expectLinearTime(list, parseComponentsList, 50);
-    const count = partsOf(320_000).length;
-    expect(count).toBeGreaterThan(5_000);
-    const result = parseComponentsList(list(320_000));
-    expect(result.parts).toBe(count);
-    expect(result.unparsed).toBe(0);
-    expect(result.components).toHaveLength(count);
-    expect(result.components[0]).toEqual({ ref: 'r0', latitude: 1, longitude: 2, name: 'c' });
-    expect(result.components.at(-1)).toEqual({
-      ref: `r${count - 1}`,
-      latitude: 1,
-      longitude: 2,
-      name: 'c',
+  it('parses a site whose list sits at the 262,144-character row bound', () => {
+    const entry = { name: 'c', ref: 'r', latitude: 1, longitude: 2 };
+    const count = Math.floor(262_144 / (JSON.stringify(entry).length + 1));
+    const list = componentsList(Array.from({ length: count }, () => entry));
+    expect(list.length).toBeLessThanOrEqual(262_144);
+    expect(parseComponentsList(list)).toEqual({
+      components: Array.from({ length: count }, () => entry),
+      parts: count,
+      unparsed: 0,
     });
-  }, 30_000);
-
-  it('splits each entry exactly as an anchored name/ref/latitude/longitude pattern would', () => {
-    /** The entry grammar: greedy name, lazy ref, anchored numeric tail, so the last key sequence wins. */
-    const ENTRY =
-      /^name: (.*), ref: (.*?), latitude: (-?\d+(?:\.\d+)?), longitude: (-?\d+(?:\.\d+)?)$/s;
-    const expected = (part: string) => {
-      const match = ENTRY.exec(part);
-      const ref = match?.[2]?.trim();
-      const latitude = Number(match?.[3]);
-      const longitude = Number(match?.[4]);
-      if (!match || !ref || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
-        return { components: [], parts: 1, unparsed: 1 };
-      }
-      const name = cleanText(match[1] ?? '');
-      return {
-        components: [{ ref, latitude, longitude, ...(name ? { name } : {}) }],
-        parts: 1,
-        unparsed: 0,
-      };
-    };
-    const token = fc.constantFrom(
-      'name: ',
-      ', ref: ',
-      ', latitude: ',
-      ', longitude: ',
-      'Gate',
-      'r-1',
-      ' ',
-      ',',
-      ':',
-      '-',
-      '.',
-      '1',
-      '45',
-      '2.5',
-      '-90',
-      '181',
-      '\n',
-      '<em>',
-      'é',
-    );
-    const part = fc
-      .tuple(fc.boolean(), fc.array(token, { maxLength: 14 }))
-      .map(([lead, tokens]) => `${lead ? 'name: ' : ''}${tokens.join('')}`);
-    fc.assert(
-      fc.property(part, (p) => {
-        expect(parseComponentsList(`{${p}}`)).toEqual(expected(p));
-      }),
-      { numRuns: 5_000 },
-    );
   });
 });
 
@@ -533,27 +500,80 @@ describe('parseWhcSites', () => {
     expect(parseWhcSites(null)).toEqual([]);
   });
 
-  it('maps ref to id_no as a string and cleans names', () => {
+  const LIST = 'https://whc.unesco.org/en/list/';
+
+  it("takes each link's id_no from its url, in upstream order, and cleans names", () => {
     const links = parseWhcSites(
       JSON.stringify([
-        { ref: 101, name_en: 'A <em>B</em>', name_fr: 'AB', url: 'https://x.test/1' },
-        { ref: ' 102 ', name_en: 'C', name_fr: null, url: null },
-        { ref: '103', name_en: 'D' },
+        { ref: '', name_en: 'A <em>B</em>', name_fr: 'AB', url: `${LIST}566` },
+        { ref: '', name_en: 'C &amp; D', name_fr: null, url: `${LIST}1` },
+        { ref: '', name_en: 'E', url: `${LIST}1752` },
       ]),
     );
     expect(links).toEqual([
-      { id_no: '101', name: 'A B' },
-      { id_no: '102', name: 'C' },
-      { id_no: '103', name: 'D' },
+      { id_no: '566', name: 'A B' },
+      { id_no: '1', name: 'C & D' },
+      { id_no: '1752', name: 'E' },
     ]);
   });
 
-  it('rejects unknown keys, non-arrays, and malformed JSON', () => {
-    expect(() => parseWhcSites(JSON.stringify([{ ref: 1, name_en: 'A', extra: true }]))).toThrow();
-    expect(() => parseWhcSites(JSON.stringify({ ref: 1 }))).toThrow();
-    expect(() => parseWhcSites('not json')).toThrow(SyntaxError);
-    expect(() => parseWhcSites(JSON.stringify([{ ref: 1 }]))).toThrow();
+  it.each<[string, Record<string, unknown>]>([
+    ['an empty string', { ref: '' }],
+    ['a different id', { ref: '101' }],
+    ['a number', { ref: 7 }],
+    ['text', { ref: 'abc\n# X' }],
+    ['null', { ref: null }],
+    ['an object', { ref: { id: 1 } }],
+    ['absent', {}],
+  ])('reads the id from the url whatever ref holds: %s', (_label, ref) => {
+    expect(parseWhcSites(JSON.stringify([{ ...ref, name_en: 'A', url: `${LIST}566` }]))).toEqual([
+      { id_no: '566', name: 'A' },
+    ]);
   });
+
+  it.each([
+    ['null', null],
+    ['an http URL', 'http://whc.unesco.org/en/list/566'],
+    ['a trailing slash', `${LIST}566/`],
+    ['a zero id', `${LIST}0`],
+    ['a leading-zero id', `${LIST}0566`],
+    ['a non-numeric id', `${LIST}abc`],
+    ['an id with a suffix', `${LIST}566bis`],
+    ['a query string', `${LIST}566?lang=en`],
+    ['a fragment', `${LIST}566#map`],
+    ['another language', 'https://whc.unesco.org/fr/list/566'],
+    ['another host', 'https://example.test/en/list/566'],
+    ['a leading space', ` ${LIST}566`],
+    ['a line break after the id', `${LIST}566\n# X`],
+    ['the list page', LIST],
+  ])('fails a link whose url is %s, even beside a valid-looking ref', (_label, url) => {
+    expect(() => parseWhcSites(JSON.stringify([{ ref: '566', name_en: 'A', url }]))).toThrow();
+  });
+
+  it('fails a link with no url', () => {
+    expect(() => parseWhcSites(JSON.stringify([{ ref: '566', name_en: 'A' }]))).toThrow();
+  });
+
+  it('rejects unknown keys, non-arrays, and malformed JSON', () => {
+    const link = { ref: '', name_en: 'A', url: `${LIST}1` };
+    expect(() => parseWhcSites(JSON.stringify([{ ...link, extra: true }]))).toThrow();
+    expect(() => parseWhcSites(JSON.stringify(link))).toThrow();
+    expect(() => parseWhcSites('not json')).toThrow(SyntaxError);
+    expect(() => parseWhcSites(JSON.stringify([{ url: `${LIST}1` }]))).toThrow();
+  });
+
+  it('checks a link url in linear time: a long digit run with a non-digit end', () => {
+    const run = (url: string) => {
+      try {
+        parseWhcSites(JSON.stringify([{ ref: '', name_en: 'A', url }]));
+      } catch {
+        // The url fails the link schema; only the time it takes matters here.
+      }
+    };
+    const url = (n: number) => `${LIST}1${'2'.repeat(n - LIST.length - 2)}x`;
+    expect(() => parseWhcSites(JSON.stringify([{ name_en: 'A', url: url(5_000) }]))).toThrow();
+    expectLinearTime(url, run, 50);
+  }, 30_000);
 });
 
 describe('row schemas', () => {
@@ -594,12 +614,49 @@ describe('row schemas', () => {
     ['danger_list without the Y prefix', { danger_list: '2015' }],
     ['danger_list with a short year', { danger_list: 'Y 15' }],
     ['no States Parties', { states_names: [] }],
-    ['coordinates with an extra key', { coordinates: { lon: 1, lat: 2, alt: 3 } }],
-    ['string coordinates', { coordinates: { lon: '1', lat: '2' } }],
+    ['coordinates as the earlier { lon, lat } point', { coordinates: { lon: 1, lat: 2 } }],
+    [
+      'coordinates as a Point geometry',
+      { coordinates: { ...multiPoint([1, 2]), geometry: { type: 'Point', coordinates: [1, 2] } } },
+    ],
+    [
+      'coordinates as a bare MultiPoint geometry',
+      { coordinates: { type: 'MultiPoint', coordinates: [[1, 2]] } },
+    ],
+    ['coordinates of another GeoJSON type', { coordinates: { ...multiPoint([1, 2]), type: 'X' } }],
+    ['coordinates with an extra Feature key', { coordinates: { ...multiPoint([1, 2]), id: 1 } }],
+    [
+      'coordinates with an extra geometry key',
+      { coordinates: { ...multiPoint(), geometry: { ...geometry([[1, 2]]), bbox: [1, 2, 1, 2] } } },
+    ],
+    [
+      'coordinates with a properties value',
+      { coordinates: { ...multiPoint([1, 2]), properties: { name: 'x' } } },
+    ],
+    [
+      'coordinates with null properties',
+      { coordinates: { ...multiPoint([1, 2]), properties: null } },
+    ],
+    ['coordinates with no position', { coordinates: multiPoint() }],
+    [
+      'a three-number position',
+      { coordinates: { ...multiPoint(), geometry: geometry([[1, 2, 3]]) } },
+    ],
+    ['a one-number position', { coordinates: { ...multiPoint(), geometry: geometry([[1]]) } }],
+    ['a string position', { coordinates: { ...multiPoint(), geometry: geometry([['1', '2']]) } }],
+    ['a GeoJSON string', { coordinates: JSON.stringify(multiPoint([1, 2])) }],
     ['negative components_count', { components_count: -1 }],
     ['fractional components_count', { components_count: 1.5 }],
   ])('whc001 rejects %s', (_label, override) => {
     expect(WhcRowSchema.safeParse(whcRow(override)).success).toBe(false);
+  });
+
+  it.each([
+    ['one position', multiPoint([2, 48])],
+    ['many positions', multiPoint([2, 48], [2.1, 48.1], [-179.5, -89.5])],
+    ['no coordinates', null],
+  ])('whc001 accepts coordinates with %s', (_label, coordinates) => {
+    expect(WhcRowSchema.safeParse(whcRow({ coordinates })).success).toBe(true);
   });
 
   it('whc001 accepts recorded (vi) and null-valued optional columns', () => {
@@ -738,7 +795,6 @@ describe('text length bounds', () => {
       NAME,
     ),
     ...scalar(['secondary_dates'], NAME),
-    ...scalar(['iso_codes'], NAME, (length) => `FR,${' '.repeat(length - 5)}DE`),
     ...listOf(['states_names'], NAME),
     ...scalar(
       [
@@ -756,18 +812,9 @@ describe('text length bounds', () => {
     ...scalar(['main_image_url'], URL_LENGTH, url),
   ];
   const ICH_CASES: Case[] = [
-    ...scalar(
-      [
-        'title_en',
-        'title_fr',
-        'main_image_caption_en',
-        'main_image_copyright',
-        'main_image_author',
-      ],
-      NAME,
-    ),
+    ...scalar(['title_en', 'title_fr', 'main_image_copyright', 'main_image_author'], NAME),
     ...listOf(['concepts_primary_names', 'concepts_secondary_names'], NAME),
-    ...scalar(['description_en', 'description_fr', 'whc_sites'], TEXT),
+    ...scalar(['description_en', 'description_fr', 'main_image_caption_en', 'whc_sites'], TEXT),
     ...scalar(['http_url_en', 'main_image_url'], URL_LENGTH, url),
   ];
   const MAB_CASES: Case[] = [
@@ -1019,6 +1066,69 @@ describe('toHeritageSite', () => {
     expect(site.components.find((c) => c.ref === '108-004')).toBeDefined();
   });
 
+  it("takes a single-component site's point from its one MultiPoint position, [lon, lat]", () => {
+    const row = WhcRowSchema.parse(
+      whcRow({ id_no: '211', coordinates: multiPoint([64.5158888889, 34.3964166667]) }),
+    );
+    expect(toHeritageSite(row).site).toMatchObject({
+      latitude: 34.3964166667,
+      longitude: 64.5158888889,
+    });
+  });
+
+  it('gives a serial site no point: its MultiPoint holds one position per component', () => {
+    const parts = Array.from({ length: 8 }, (_, i) => ({
+      name: `Valley Part ${i + 1}`,
+      ref: `208-00${i + 1}`,
+      latitude: 34.8 + i * 0.01,
+      longitude: 67.8 + i * 0.01,
+    }));
+    const row = WhcRowSchema.parse(
+      whcRow({
+        id_no: '208',
+        states_names: ['Afghanistan'],
+        iso_codes: ['AF'],
+        coordinates: multiPoint(...parts.map((p): [number, number] => [p.longitude, p.latitude])),
+        components_count: 8,
+        components_list: componentsList(parts),
+      }),
+    );
+    const { site, componentParts } = toHeritageSite(row);
+    expect(site).not.toHaveProperty('latitude');
+    expect(site).not.toHaveProperty('longitude');
+    expect(site.country_codes).toEqual(['AF']);
+    expect(site.components).toEqual(parts);
+    expect(site.components[0]?.ref).toBe('208-001');
+    expect(site.components_unparsed).toBe(0);
+    expect(componentParts).toBe(8);
+  });
+
+  it('gives a site with null coordinates and an empty list no point and no components', () => {
+    const row = WhcRowSchema.parse(
+      whcRow({ coordinates: null, components_count: 0, components_list: '[]' }),
+    );
+    const { site, componentParts } = toHeritageSite(row);
+    expect(site).not.toHaveProperty('latitude');
+    expect(site.components).toEqual([]);
+    expect(componentParts).toBe(0);
+  });
+
+  it('reads country_codes as iso_codes serves them, aligned with states', () => {
+    const codes = 'AR BE CH DE DK ES FI FR IN IS IT JP LU NL NO PT SE AT'.split(' ');
+    const states = codes.map((code) => `State ${code}`);
+    const row = WhcRowSchema.parse(whcRow({ states_names: states, iso_codes: codes }));
+    const { site } = toHeritageSite(row);
+    expect(site.country_codes).toEqual(codes);
+    expect(site.states).toEqual(states);
+  });
+
+  it('fails the mapping when components_list is not a JSON array', () => {
+    for (const components_list of ['{}', '{name: A, ref: r, latitude: 1, longitude: 2}']) {
+      const row = WhcRowSchema.parse(whcRow({ components_list }));
+      expect(() => toHeritageSite(row)).toThrow();
+    }
+  });
+
   it('reports a part count that differs from components_count without changing the total', () => {
     const row = WhcRowSchema.parse(whcRow({ components_count: 9 }));
     const { site, componentParts } = toHeritageSite(row);
@@ -1079,8 +1189,8 @@ describe('toIntangibleElement', () => {
           concepts_primary_names: [' Textile <b>craft</b> '],
           concepts_secondary_names: ['', 'Ritual'],
           whc_sites: JSON.stringify([
-            { ref: '101', name_en: 'A <em>B</em>' },
-            { ref: 102, name_en: 'C' },
+            { ref: '', name_en: 'A <em>B</em>', url: 'https://whc.unesco.org/en/list/101' },
+            { ref: '', name_en: 'C', url: 'https://whc.unesco.org/en/list/102' },
           ]),
         }),
       ),
@@ -1134,6 +1244,22 @@ describe('toIntangibleElement', () => {
       expect(toIntangibleElement(row)).not.toHaveProperty('image');
     },
   );
+
+  it('carries a long descriptive caption whole', () => {
+    const caption = `${'A procession crosses the square at dusk. '.repeat(50)}Photo taken in 2019`;
+    expect(caption).toHaveLength(2_069);
+    const element = toIntangibleElement(
+      IchRowSchema.parse(ichRow({ main_image_caption_en: caption })),
+    );
+    expect(element.image?.caption).toBe(caption);
+  });
+
+  it('fails the row when a site link has no url', () => {
+    const row = IchRowSchema.parse(
+      ichRow({ whc_sites: JSON.stringify([{ ref: '', name_en: 'A', url: null }]) }),
+    );
+    expect(() => toIntangibleElement(row)).toThrow();
+  });
 
   it('serves a credited image without a caption when the export left out the caption', () => {
     const { main_image_caption_en: _dropped, ...row } = IchRowSchema.parse(ichRow());
@@ -1388,16 +1514,29 @@ describe('URL entity decoding', () => {
 });
 
 describe('code and link shapes', () => {
-  it.each(['F R', 'fr', 'FR;DE', 'FR,\n# X'])('rejects iso_codes %j', (iso_codes) => {
+  it.each<[unknown]>([
+    ['FR'],
+    ['DE, PL'],
+    [[]],
+    [['fr']],
+    [['F R']],
+    [['FRA']],
+    [['DE,PL']],
+    [[' FR']],
+    [['FR\n# X']],
+    [[7]],
+    [[null]],
+  ])('rejects iso_codes %j', (iso_codes) => {
     expect(WhcRowSchema.safeParse(whcRow({ iso_codes })).success).toBe(false);
   });
 
-  it.each(['FR', 'DE, PL', 'DE,PL'])('accepts iso_codes %j', (iso_codes) => {
+  it.each<[unknown]>([
+    [null],
+    [['FR']],
+    [['DE', 'PL']],
+    ['AR BE CH DE DK ES FI FR IN IS IT JP LU NL NO PT SE AT'.split(' ')],
+  ])('accepts iso_codes %j', (iso_codes) => {
     expect(WhcRowSchema.safeParse(whcRow({ iso_codes })).success).toBe(true);
-  });
-
-  it.each(['101\n# X', 'abc', '0', 0, 1.5])('rejects the whc_sites ref %j', (ref) => {
-    expect(() => parseWhcSites(JSON.stringify([{ ref, name_en: 'A' }]))).toThrow();
   });
 });
 

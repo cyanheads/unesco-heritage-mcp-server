@@ -10,7 +10,7 @@
  */
 
 import type { Context, z } from '@cyanheads/mcp-ts-core';
-import { serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
+import { McpError, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 import {
   createPacer,
   fetchWithTimeout,
@@ -247,9 +247,12 @@ export class UnescoDataHubService {
           if (isLicenseChange(error) || !slot.snapshot) {
             logger.error(`Failed to load ${id} snapshot`, err, detail);
           } else {
+            // A warning takes no error argument, so the failure's data (a row schema failure's issues) rides in the context.
             logger.warning(
               `Refresh of ${id} failed; serving the previous snapshot. ${err.message}`,
-              detail,
+              error instanceof McpError && error.data
+                ? withExtra(detail, { error: error.data })
+                : detail,
             );
           }
           return { ok: false, error };
@@ -411,8 +414,11 @@ export class UnescoDataHubService {
     let unparsed = 0;
     const countMismatches: string[] = [];
     rows.forEach((raw, index) => {
-      const { site, componentParts } = mapRow('whc001', index, () =>
-        toHeritageSite(parseRow('whc001', schema, raw, index)),
+      const { site, componentParts } = mapRow(
+        'whc001',
+        index,
+        parseRow('whc001', schema, raw, index),
+        toHeritageSite,
       );
       unparsed += site.components_unparsed;
       if (componentParts !== site.components_total) countMismatches.push(site.id_no);
@@ -430,8 +436,10 @@ export class UnescoDataHubService {
     return this.index('whc001', records, meta, {
       id: (s) => s.id_no,
       codes: (s) => s.country_codes,
+      // In MATCH_TIERS order (search-sites.tool.ts); unreadable entries never reach `components`.
       tiers: (s) => [
         foldTier(s.name, s.names.fr, s.names.es, s.names.ru, s.names.ar, s.names.zh),
+        foldTier(...s.components.map((c) => c.name)),
         foldTier(s.description),
         foldTier(s.justification),
       ],
@@ -441,7 +449,7 @@ export class UnescoDataHubService {
   private buildIntangible(rows: unknown[], meta: DatasetMeta): IntangibleSnapshot {
     const schema = IchRowSchema.omit(unlistedMask(OPTIONAL_FIELDS.ich001, meta.fields));
     const records = rows.map((raw, index) =>
-      mapRow('ich001', index, () => toIntangibleElement(parseRow('ich001', schema, raw, index))),
+      mapRow('ich001', index, parseRow('ich001', schema, raw, index), toIntangibleElement),
     );
     return this.index('ich001', records, meta, {
       id: (e) => e.ich_ref,
@@ -457,7 +465,7 @@ export class UnescoDataHubService {
   private buildBiosphere(rows: unknown[], meta: DatasetMeta): BiosphereSnapshot {
     const schema = MabRowSchema.omit(unlistedMask(OPTIONAL_FIELDS.mab001, meta.fields));
     const records = rows.map((raw, index) =>
-      mapRow('mab001', index, () => toBiosphereReserve(parseRow('mab001', schema, raw, index))),
+      mapRow('mab001', index, parseRow('mab001', schema, raw, index), toBiosphereReserve),
     );
     return this.index('mab001', records, meta, {
       id: (r) => foldText(r.mab_id),
@@ -473,7 +481,7 @@ export class UnescoDataHubService {
   private buildGeoparks(rows: unknown[], meta: DatasetMeta): GeoparkSnapshot {
     const schema = EgRowSchema.omit(unlistedMask(OPTIONAL_FIELDS.eg0001, meta.fields));
     const records = rows.map((raw, index) =>
-      mapRow('eg0001', index, () => toGeopark(parseRow('eg0001', schema, raw, index))),
+      mapRow('eg0001', index, parseRow('eg0001', schema, raw, index), toGeopark),
     );
     return this.index('eg0001', records, meta, {
       id: (g) => g.ugg_id,
@@ -573,10 +581,14 @@ function parseRow<T>(dataset: DatasetId, schema: z.ZodType<T>, raw: unknown, ind
   );
 }
 
-/** Runs a row mapper, converting a mapper throw into a non-retryable refresh failure. */
-function mapRow<T>(dataset: DatasetId, index: number, map: () => T): T {
+/**
+ * Maps a validated row, converting a mapper throw into a non-retryable refresh
+ * failure. Validation runs before the call, so a schema failure reaches the
+ * caller as `parseRow` raised it, with its `issues`.
+ */
+function mapRow<R, T>(dataset: DatasetId, index: number, row: R, map: (row: R) => T): T {
   try {
-    return map();
+    return map(row);
   } catch (error) {
     throw serviceUnavailable(
       `Dataset ${dataset} row ${index} could not be mapped: ${error instanceof Error ? error.message : String(error)}`,

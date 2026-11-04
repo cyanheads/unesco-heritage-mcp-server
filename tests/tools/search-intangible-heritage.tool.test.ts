@@ -1001,7 +1001,9 @@ describe('unesco_search_intangible_heritage — format() parity and text safety'
             ich_public_ref: '77',
             title_en: 'Evil\r\n# Injected Heading',
             concepts_primary_names: ['Line\nOne', 'Two\r\n- item'],
-            whc_sites: JSON.stringify([{ ref: '5', name_en: 'Site\r\n## Name' }]),
+            whc_sites: JSON.stringify([
+              { ref: '', name_en: 'Site\r\n## Name', url: 'https://whc.unesco.org/en/list/5' },
+            ]),
           }),
         ],
       },

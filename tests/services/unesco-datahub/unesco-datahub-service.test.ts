@@ -39,6 +39,7 @@ import {
   EG_ROWS,
   egRow,
   ICH_ROWS,
+  ichRow,
   MAB_ROWS,
   mabRow,
   WHC_ROWS,
@@ -128,20 +129,33 @@ describe('lazy load and snapshot contents', () => {
     expect(snapshot.byId.get('999')).toBeUndefined();
     expect([...snapshot.codes].sort()).toEqual(['DE', 'ET', 'FR', 'JP', 'PE', 'PL']);
     expect(snapshot.folded).toHaveLength(snapshot.records.length);
-    for (const tiers of snapshot.folded) expect(tiers).toHaveLength(3);
+    for (const tiers of snapshot.folded) expect(tiers).toHaveLength(4);
   });
 
-  it('folds site names of all six languages into tier 1, descriptions into 2, statements into 3', async () => {
+  it('folds site names of all six languages into tier 1, component names into 2, descriptions into 3, statements into 4', async () => {
     const { service } = makeService();
     const snapshot = await service.getHeritage(ctx());
     const index = snapshot.records.findIndex((s) => s.id_no === '101');
-    const [names, description, justification] = snapshot.folded[index] ?? [];
+    const [names, components, description, justification] = snapshot.folded[index] ?? [];
     expect(names).toContain(' alderfen old town');
     expect(names).toContain(' vieille ville d alderfen');
     expect(names).toContain(' casco antiguo de alderfen');
     expect(names).toContain(' 奥德芬古城');
+    expect(components).toBe(' north gate upper ward market hall old mill');
     expect(description).toContain(' a synthetic walled town');
     expect(justification).toContain(' criterion ii synthetic exchange of ideas');
+  });
+
+  it('folds only named, readable components into the component tier, and nothing for a site without any', async () => {
+    const { service } = makeService();
+    const snapshot = await service.getHeritage(ctx());
+    const tierOf = (id: string) =>
+      snapshot.folded[snapshot.records.findIndex((s) => s.id_no === id)]?.[1];
+    // 108 lists a nameless entry (108-003) and an unreadable one (108-005 "Bad Lat").
+    expect(tierOf('108')).toBe(
+      ' stone gate north odd ref name latitude 1 longitude 2 gate spaced ref',
+    );
+    expect(tierOf('104')).toBe(' ');
   });
 
   it('keys intangible elements by ich_ref and folds name, concept, description tiers', async () => {
@@ -325,6 +339,37 @@ describe('TTL and stale-while-revalidate', () => {
       ).toBe(true),
     );
     expect(await service.getHeritage(ctx())).toBe(first);
+  });
+
+  it('logs a refresh row schema failure once, with its issues', async () => {
+    const warning = vi.spyOn(logger, 'warning');
+    let invalid = false;
+    const { service } = makeService(
+      {
+        intercept: (call) =>
+          invalid && call.kind === 'export'
+            ? Response.json(
+                WHC_ROWS.map((row, i) => (i === 0 ? { ...row, category: 'Hybrid' } : row)),
+              )
+            : undefined,
+      },
+      TTL,
+    );
+    const first = await service.getHeritage(ctx());
+    invalid = true;
+    clock += TTL;
+    expect(await service.getHeritage(ctx())).toBe(first);
+    const refreshWarnings = () =>
+      warning.mock.calls.filter((c) => String(c[0]).includes('serving the previous snapshot'));
+    await vi.waitFor(() => expect(refreshWarnings()).toHaveLength(1));
+    const [message, context] = refreshWarnings()[0] ?? [];
+    expect(message).toContain('Dataset whc001 row 0 failed validation (category: ');
+    expect(message).not.toContain('could not be mapped');
+    expect(context).toMatchObject({
+      extra: {
+        error: { dataset: 'whc001', rowIndex: 0, issues: [expect.stringMatching(/^category: /)] },
+      },
+    });
   });
 
   it('waits out an exponential backoff between failed refreshes, then recovers', async () => {
@@ -951,6 +996,66 @@ describe('strict validation and integrity checks', () => {
     await service.getHeritage(ctx());
     expect(warning).not.toHaveBeenCalled();
   });
+});
+
+describe('row failure causes', () => {
+  it.each([
+    ['whc001', { whc001: [whcRow({ category: 'Hybrid' })] }, 'category'],
+    ['ich001', { ich001: [ichRow({ type_of_element_en: 'Other List' })] }, 'type_of_element_en'],
+    ['mab001', { mab001: [mabRow({ iso2: 'fr' })] }, 'iso2'],
+    ['eg0001', { eg0001: [egRow({ area_unit: 'km2' })] }, 'area_unit'],
+  ] as const)(
+    'surfaces a %s row schema failure once, as validation raised it, with its issues',
+    async (dataset, rows, field) => {
+      const { service } = makeService({ rows });
+      const error = await rejectionFrom(load(service, dataset));
+      expectRejectedLoad(error, dataset);
+      const cause = error.cause as McpError;
+      expect(
+        cause.message.startsWith(`Dataset ${dataset} row 0 failed validation (${field}: `),
+      ).toBe(true);
+      expect(cause.message).not.toContain('could not be mapped');
+      expect(cause.data).toMatchObject({ dataset, rowIndex: 0, retryable: false });
+      expect((cause.data as { issues?: unknown }).issues).toEqual([
+        expect.stringMatching(new RegExp(`^${field}: `)),
+      ]);
+    },
+  );
+
+  it('wraps only a mapper throw as a mapping failure, without schema issues', async () => {
+    const { service } = makeService({ rows: { mab001: [mabRow({ regional_group: 'Atlantis' })] } });
+    const error = await rejectionFrom(service.getBiosphere(ctx()));
+    expectRejectedLoad(error, 'mab001');
+    const cause = error.cause as McpError;
+    expect(cause.message).toBe(
+      'Dataset mab001 row 0 could not be mapped: Reserve FRTest1990 lists an unknown regional_group entry.',
+    );
+    expect(cause.data).toEqual({ dataset: 'mab001', rowIndex: 0, retryable: false });
+  });
+
+  it.each([
+    ['whc001', 'a components_list JSON object', whcRow({ components_list: '{}' })],
+    [
+      'whc001',
+      'the earlier pseudo-JSON components_list',
+      whcRow({ components_list: '{name: A, ref: 900-001, latitude: 48, longitude: 2}' }),
+    ],
+    [
+      'ich001',
+      'a site link without a url',
+      ichRow({ whc_sites: JSON.stringify([{ ref: '566', name_en: 'A' }]) }),
+    ],
+  ] as const)(
+    'fails the %s load on a row with %s, as a mapping failure',
+    async (dataset, _label, row) => {
+      const { service } = makeService({ rows: { [dataset]: [row] } });
+      const error = await rejectionFrom(load(service, dataset));
+      expectRejectedLoad(error, dataset);
+      const cause = error.cause as McpError;
+      expect(cause.message.startsWith(`Dataset ${dataset} row 0 could not be mapped: `)).toBe(true);
+      expect(cause.data).toEqual({ dataset, rowIndex: 0, retryable: false });
+    },
+  );
 });
 
 describe('body budgets and text bounds', () => {

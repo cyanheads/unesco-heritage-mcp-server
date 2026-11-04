@@ -1,6 +1,6 @@
 # unesco-heritage-mcp-server - Directory Structure
 
-Generated on: 2026-10-17 22:11:38
+Generated on: 2026-11-04 09:31:55
 
 ```text
 unesco-heritage-mcp-server/
@@ -37,6 +37,8 @@ unesco-heritage-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -134,6 +136,9 @@ unesco-heritage-mcp-server/
 │   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
+├── skills/
+│   └── unesco-heritage-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── mcp-server/
 │   │   ├── prompts/
@@ -188,6 +193,8 @@ unesco-heritage-mcp-server/
 │   │   ├── geopark.resource.test.ts
 │   │   ├── intangible-heritage-element.resource.test.ts
 │   │   └── site.resource.test.ts
+│   ├── scripts/
+│   │   └── bundle-agent-docs.test.ts
 │   ├── services/
 │   │   └── unesco-datahub/
 │   │       ├── iso3166.test.ts
@@ -231,7 +238,9 @@ unesco-heritage-mcp-server/
 ├── Dockerfile
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json

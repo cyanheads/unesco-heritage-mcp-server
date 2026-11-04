@@ -45,6 +45,7 @@ import {
   countInto,
   displayDistanceKm,
   fingerprint,
+  foldTier,
   haversineKm,
   makeCursor,
   matchTier,
@@ -52,6 +53,8 @@ import {
   queryWords,
   readCursor,
   topCounts,
+  wordMatches,
+  wordTiers,
 } from '@/services/unesco-datahub/search.js';
 import type { HeritageSite, SiteComponent } from '@/services/unesco-datahub/types.js';
 import {
@@ -75,7 +78,12 @@ const SORTS = [
   'distance',
 ] as const;
 
-const MATCH_TIERS = ['name', 'description', 'justification'] as const;
+/** Keyword tiers in match order; the service folds each site's tier text in this order. */
+const MATCH_TIERS = ['name', 'component', 'description', 'justification'] as const;
+const COMPONENT_TIER = MATCH_TIERS.indexOf('component');
+
+/** Most matched components one row lists; `matched_components_total` counts them all. */
+const MATCHED_COMPONENTS_CAP = 10;
 
 /** `1`–`10` (number or digit string), `(iv)`, `IV` → the numeral. */
 function normalizeCriterion(value: unknown): unknown {
@@ -145,7 +153,28 @@ const SiteRow = z
       .enum(MATCH_TIERS)
       .optional()
       .describe(
-        'The first field tier by which every query word had matched; justification is the statement of Outstanding Universal Value (present when query is set).',
+        "The first field tier by which every query word had matched, in rank order: name (the site's names), component (its component names), description, then justification (the statement of Outstanding Universal Value). Present when query is set.",
+      ),
+    matched_components: z
+      .array(
+        z
+          .object({
+            ref: z.string().describe('Component reference.'),
+            name: z.string().describe('Component name.'),
+            latitude: z.number().describe('Component point latitude.'),
+            longitude: z.number().describe('Component point longitude.'),
+          })
+          .describe('One component whose name matched.'),
+      )
+      .optional()
+      .describe(
+        `The components whose names match a query word the site's own names lack, those matching more such words first, then in UNESCO order; at most ${MATCHED_COMPONENTS_CAP}. Present when such a word first matched in the component tier, whatever matched_in is.`,
+      ),
+    matched_components_total: z
+      .number()
+      .optional()
+      .describe(
+        'How many components match, listed or not; present with matched_components. unesco_get_site lists every component of the site.',
       ),
     description: z
       .string()
@@ -230,11 +259,11 @@ type AppliedFilters = z.infer<typeof AppliedFiltersSchema>;
 export const searchSitesTool = tool('unesco_search_sites', {
   title: 'Search World Heritage sites',
   description:
-    "Search the UNESCO World Heritage List by keyword, country, category (Cultural, Natural, Mixed), region, inscription criteria (i)–(x), inscription year range, Danger-list status, transboundary status, or distance from a point. Every keyword must appear at the start of a word in a site's name (any of six languages), description, or statement of Outstanding Universal Value, and name matches rank first. A country is an ISO 3166-1 alpha-2 or alpha-3 code and matches every site it shares, transboundary sites included. Set in_danger to true for the List of World Heritage in Danger; the data records the year of each site's current Danger-list entry but no threat factors. Criterion (vi) is inferred from each site's statement of Outstanding Universal Value and marked as inferred. Results page with next_cursor and carry facet counts over the whole match.",
+    "Search the UNESCO World Heritage List by keyword, country, category (Cultural, Natural, Mixed), region, inscription criteria (i)–(x), inscription year range, Danger-list status, transboundary status, or distance from a point. Every keyword must appear at the start of a word in a site's name (any of six languages), component names, description, or statement of Outstanding Universal Value; name matches rank first, then component matches, which list the components that matched. A country is an ISO 3166-1 alpha-2 or alpha-3 code and matches every site it shares, transboundary sites included. Set in_danger to true for the List of World Heritage in Danger; the data records the year of each site's current Danger-list entry but no threat factors. Criterion (vi) is inferred from each site's statement of Outstanding Universal Value and marked as inferred. Results page with next_cursor and carry facet counts over the whole match.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     query: queryInput(
-      `Keywords; every word must match the start of a word in a site's name (any of six languages), description, or statement of Outstanding Universal Value. Case, accents, and punctuation are ignored, so the query must contain at least one letter or digit and at most ${MAX_QUERY_WORDS} distinct words; no phrases, operators, or fuzzy matching.`,
+      `Keywords; every word must match the start of a word in a site's name (any of six languages), component names, description, or statement of Outstanding Universal Value. Case, accents, and punctuation are ignored, so the query must contain at least one letter or digit and at most ${MAX_QUERY_WORDS} distinct words; no phrases, operators, or fuzzy matching.`,
     ),
     country: countryInput(
       'ISO 3166-1 alpha-2 or alpha-3 code, any case (FR, FRA). Matches every site the country takes part in, transboundary sites included. For a country name, look up its code with unesco_list_reference (topic countries).',
@@ -276,7 +305,7 @@ export const searchSitesTool = tool('unesco_search_sites', {
       'Result order. Default: relevance when query is set, else distance when near is set, else name. relevance needs query; distance needs near. Absent areas and Danger years sort last.',
     ),
     include_description: includeDescriptionInput(
-      "Set false to leave each row's description out of the response (default true); unesco_get_site returns it. Which sites match, their order, and matched_in are unchanged.",
+      "Set false to leave each row's description out of the response (default true); unesco_get_site returns it. Which sites match, their order, matched_in, and matched_components are unchanged.",
     ),
     limit: limitInput,
     cursor: cursorInput,
@@ -476,10 +505,12 @@ export const searchSitesTool = tool('unesco_search_sites', {
 
     matched.sort(siteComparator(sort, records, tierOf, distanceOf));
     const page = matched.slice(offset, offset + limit.applied).map((i) => {
+      const site = records[i] as HeritageSite;
       const point = nearest[i];
       return toRow(
-        records[i] as HeritageSite,
+        site,
         tierOf[i],
+        input.query ? matchedComponents(site, words, folded[i] as readonly string[]) : undefined,
         near && point ? displayDistanceKm(point.km, near.radius_km) : undefined,
         point?.component,
         input.include_description,
@@ -505,7 +536,7 @@ export const searchSitesTool = tool('unesco_search_sites', {
       }
       if (input.query && alone('query') === 0) {
         fragments.push(
-          `No site's name, description, or statement of Outstanding Universal Value contains every word of "${inline(input.query)}" (each word matches at the start of a word, and all are required). Try fewer or broader words.`,
+          `No site's name, component names, description, or statement of Outstanding Universal Value contains every word of "${inline(input.query)}" (each word matches at the start of a word, and all are required). Try fewer or broader words.`,
         );
       }
       if (near && alone('near') === 0) {
@@ -595,6 +626,22 @@ export const searchSitesTool = tool('unesco_search_sites', {
         ...(s.matched_in ? [`Matched in: ${s.matched_in}`] : []),
       ];
       lines.push('', `### ${inline(s.name)} (id_no ${s.id_no})`, facts.join(' · '));
+      if (s.matched_components) {
+        const total = s.matched_components_total;
+        const cut =
+          total !== undefined && total > s.matched_components.length
+            ? '; unesco_get_site lists every component of the site'
+            : '';
+        lines.push(
+          '',
+          `**Matched components** (${s.matched_components.length} of ${total}${cut}):`,
+          ...s.matched_components.map(
+            (c) => `- ${inline(c.ref)} — ${inline(c.name)} (${c.latitude}, ${c.longitude})`,
+          ),
+        );
+        // A blank line keeps the description or its placeholder out of the last list item.
+        if (!result.descriptions_omitted) lines.push('');
+      }
       if (s.description) lines.push(quote(s.description));
       else if (!result.descriptions_omitted) lines.push('Description: Not available');
     }
@@ -637,9 +684,39 @@ function componentNote(component: SiteRowT['nearest_component']): string {
   return ` (component ${inline(component.ref)}${name} at ${component.latitude}, ${component.longitude})`;
 }
 
+/**
+ * The components whose names match the query words that first match in the
+ * component tier (words the site's own names lack): those matching more of
+ * those words first, then UNESCO order, at most {@link MATCHED_COMPONENTS_CAP},
+ * with the count of every match. Undefined when no word first matches there.
+ * Nameless components have no text to match, and unreadable entries never
+ * reach `site.components`.
+ */
+function matchedComponents(
+  site: HeritageSite,
+  words: readonly string[],
+  tiers: readonly string[],
+): { listed: NonNullable<SiteRowT['matched_components']>; total: number } | undefined {
+  const firsts = wordTiers(words, tiers);
+  const componentWords = words.filter((_, k) => firsts?.[k] === COMPONENT_TIER);
+  if (componentWords.length === 0) return;
+  const hits = site.components.flatMap(({ ref, name, latitude, longitude }, index) => {
+    if (!name) return [];
+    const folded = foldTier(name);
+    const count = componentWords.filter((word) => wordMatches(word, folded)).length;
+    return count > 0 ? [{ component: { ref, name, latitude, longitude }, count, index }] : [];
+  });
+  hits.sort((a, b) => b.count - a.count || a.index - b.index);
+  return {
+    listed: hits.slice(0, MATCHED_COMPONENTS_CAP).map((h) => h.component),
+    total: hits.length,
+  };
+}
+
 function toRow(
   site: HeritageSite,
   tier: number | undefined,
+  matched: ReturnType<typeof matchedComponents>,
   distanceKm: number | undefined,
   component: SiteComponent | undefined,
   includeDescription: boolean,
@@ -665,6 +742,9 @@ function toRow(
     ...(distanceKm !== undefined ? { distance_km: distanceKm } : {}),
     ...(component ? { nearest_component: component } : {}),
     ...(tier !== undefined ? { matched_in: MATCH_TIERS[tier] } : {}),
+    ...(matched
+      ? { matched_components: matched.listed, matched_components_total: matched.total }
+      : {}),
     ...(includeDescription && site.description ? { description: site.description } : {}),
   };
 }

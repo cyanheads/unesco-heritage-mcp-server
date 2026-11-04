@@ -23,7 +23,7 @@ import {
   withFakeTimers,
 } from '../fixtures/failures.js';
 import { fieldsWithout, httpFailure, transientFailure, withoutKeys } from '../fixtures/hub.js';
-import { componentsList, ichRow, WHC_ROWS, whcRow } from '../fixtures/rows.js';
+import { componentsList, ichRow, multiPoint, WHC_ROWS, whcRow } from '../fixtures/rows.js';
 import {
   allText,
   disposeServiceAfterEach,
@@ -184,6 +184,42 @@ describe('unesco_get_site — record', () => {
     expect(out.description).toBe("Text with a 'quoted' word & more.\nSecond line here.");
     expect(out.components[0]?.name).toBe('Span One');
     expect(text).not.toMatch(/<\/?(?:em|i|br)\b/i);
+  });
+
+  it('reads a serial site exported with a MultiPoint, array iso_codes, and a JSON list', async () => {
+    const parts = Array.from({ length: 8 }, (_, i) => ({
+      name: `Valley Part ${i + 1}`,
+      ref: `208-00${i + 1}`,
+      latitude: Number(`34.8${i + 1}`),
+      longitude: Number(`67.8${i + 1}`),
+    }));
+    useHub({
+      rows: {
+        whc001: [
+          whcRow({
+            id_no: '208',
+            name_en: 'Synthetic Valley Ensemble',
+            states_names: ['Afghanistan'],
+            iso_codes: ['AF'],
+            coordinates: multiPoint(
+              ...parts.map((p): [number, number] => [p.longitude, p.latitude]),
+            ),
+            components_count: 8,
+            components_list: componentsList(parts),
+          }),
+        ],
+      },
+    });
+    const { out, text } = await get({ id_no: '208' });
+    expect(out.country_codes).toEqual(['AF']);
+    expect(out).not.toHaveProperty('latitude');
+    expect(out).not.toHaveProperty('longitude');
+    expect(out.components).toEqual(parts);
+    expect(out).toMatchObject({ components_total: 8, components_unparsed: 0, shown: 8 });
+    expect(text).toContain('**States Parties:** Afghanistan (AF)');
+    expect(text).toContain('**Coordinates:** Not available');
+    expect(text).toContain('**Components** (8 of 8):\n- 208-001 — Valley Part 1 (34.81, 67.81)');
+    expect(text).toContain('- 208-008 — Valley Part 8 (34.88, 67.88)');
   });
 });
 
@@ -593,7 +629,7 @@ describe('unesco_get_site — format() parity and text safety', () => {
       name_en: 'Evil\r\n# Injected Heading',
       name_fr: 'Nom\nFrançais',
       states_names: ['State\r\nOne', 'State Two'],
-      iso_codes: 'FR, DE',
+      iso_codes: ['FR', 'DE'],
       transboundary: 'True',
       short_description_en: 'First line.\n\n## Not A Heading\n- not a list',
       justification_en: 'Para one.\r\nPara two.',

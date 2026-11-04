@@ -24,7 +24,15 @@ import {
 } from '../fixtures/failures.js';
 import { DATA_AS_OF, httpFailure, transientFailure } from '../fixtures/hub.js';
 import { manyWhcRows } from '../fixtures/paging.js';
-import { componentsList, NEAR_POINT, NEAR_SITE_ROWS, WHC_ROWS, whcRow } from '../fixtures/rows.js';
+import {
+  COMPONENT_TIER_ROWS,
+  componentsList,
+  multiPoint,
+  NEAR_POINT,
+  NEAR_SITE_ROWS,
+  WHC_ROWS,
+  whcRow,
+} from '../fixtures/rows.js';
 import {
   allText,
   disposeServiceAfterEach,
@@ -750,7 +758,7 @@ describe('unesco_search_sites — near over representative points and components
     whcRow({
       id_no: id,
       name_en: `Spacing Site ${id}`,
-      coordinates: { lon: 5, lat },
+      coordinates: multiPoint([5, lat]),
       components_count: 0,
       components_list: null,
     });
@@ -878,6 +886,74 @@ describe('unesco_search_sites — near over representative points and components
       'ref',
     ]);
     expect(searchSitesTool.input.shape.near.description).toContain('component');
+  });
+});
+
+describe('unesco_search_sites — near over the GeoJSON coordinates UNESCO exports', () => {
+  /** A serial site exported as UNESCO does: one MultiPoint position per component, in list order. */
+  const SERIAL_PARTS = [
+    { name: 'North Hall', ref: '701rev-001', latitude: 61, longitude: 5 },
+    { name: 'Quay House', ref: '701rev-002', latitude: 60.05, longitude: 5 },
+    { name: 'South Hall', ref: '701rev-003', latitude: 59, longitude: 5 },
+  ];
+  const ROWS = [
+    whcRow({
+      id_no: '701',
+      name_en: 'Serial Halls',
+      coordinates: multiPoint(
+        ...SERIAL_PARTS.map((p): [number, number] => [p.longitude, p.latitude]),
+      ),
+      components_count: 3,
+      components_list: componentsList(SERIAL_PARTS),
+    }),
+    whcRow({
+      id_no: '702',
+      name_en: 'Single Hall',
+      coordinates: multiPoint([5, 60.2]),
+      components_count: 1,
+      components_list: componentsList([
+        { name: 'Single Hall', ref: '702-001', latitude: 60.2, longitude: 5 },
+      ]),
+    }),
+    whcRow({
+      id_no: '703',
+      name_en: 'Unlocated Hall',
+      coordinates: null,
+      components_count: 0,
+      components_list: '[]',
+    }),
+  ];
+
+  beforeEach(() => {
+    useHub({ rows: { whc001: ROWS } });
+  });
+
+  it('matches a multi-point site through its component, with no representative point', async () => {
+    const { result, out } = await search({ near: { ...NEAR_POINT, radius_km: 30 } });
+    expect(out.totalCount).toBe(2);
+    expect(out.sites.map((s) => [s.id_no, s.distance_km])).toEqual([
+      ['701', 5.6],
+      ['702', 22.2],
+    ]);
+    const serial = out.sites[0] as SiteRow;
+    expect(serial).not.toHaveProperty('latitude');
+    expect(serial).not.toHaveProperty('longitude');
+    expect(serial.nearest_component).toEqual(SERIAL_PARTS[1]);
+    expect(out.sites[1]).toMatchObject({ latitude: 60.2, longitude: 5 });
+    const text = textBlocks(result)[0] ?? '';
+    expect(text).toContain(
+      '· Coordinates: Not available · Distance: 5.6 km (component 701rev-002 Quay House at 60.05, 5)',
+    );
+    expect(text).toContain('· Coordinates: 60.2, 5 · Distance: 22.2 km');
+  });
+
+  it('counts only the site with neither a point nor a component as never matching near', async () => {
+    const { out, text } = await search({ near: { latitude: 0, longitude: -160, radius_km: 10 } });
+    expect(out.totalCount).toBe(0);
+    const notice =
+      "No site's representative point or component lies within 10 km of (0, -160), and 1 site has no coordinates at all, so it never matches near. Increase radius_km.";
+    expect(out.notice).toBe(notice);
+    expect(text).toContain(notice);
   });
 });
 
@@ -1022,6 +1098,358 @@ describe('unesco_search_sites — keyword tiers', () => {
   });
 });
 
+describe('unesco_search_sites — component name tier', () => {
+  beforeEach(() => {
+    useHub({ rows: { whc001: COMPONENT_TIER_ROWS } });
+  });
+
+  const row = (out: SearchOutput, id: string) => out.sites.find((s) => s.id_no === id) as SiteRow;
+  const refs = (site: SiteRow | undefined) => site?.matched_components?.map((c) => c.ref);
+  const VELKARO = { ref: '801-002', name: 'Velkaro Hall, Brask', latitude: 60.2, longitude: 25 };
+  /** 805's twelve readable `fort` components in UNESCO order. */
+  const FORTS = [
+    '001',
+    '003',
+    '005',
+    '006',
+    '008',
+    '009',
+    '010',
+    '011',
+    '012',
+    '013',
+    '014',
+    '016',
+  ];
+
+  it('finds a site by a component its own names and text never mention', async () => {
+    const hall = await search({ query: 'Velkaro Hall' });
+    expect(hall.out.totalCount).toBe(1);
+    expect(hall.out.sites[0]).toMatchObject({
+      id_no: '801',
+      matched_in: 'component',
+      matched_components: [VELKARO],
+      matched_components_total: 1,
+    });
+    const tarvel = await search({ query: 'tarvel' });
+    expect(tarvel.out.sites.map((s) => [s.id_no, s.matched_in, refs(s)])).toEqual([
+      ['802', 'component', ['802-018']],
+    ]);
+  });
+
+  it('ranks a component match above sites that hold the words only in a statement', async () => {
+    const { out } = await search({ query: 'unity chapel' });
+    expect(out.sites.map((s) => [s.id_no, s.matched_in, refs(s)])).toEqual([
+      ['803', 'component', ['803rev-001']],
+      ['804', 'justification', undefined],
+    ]);
+    expect(row(out, '804')).not.toHaveProperty('matched_components_total');
+    const byName = await search({ query: 'unity chapel', sort: 'name' });
+    expect(ids(byName.out)).toEqual(['804', '803']);
+  });
+
+  it('keeps matched_in name and lists no components when every word matches the names', async () => {
+    for (const [query, id] of [
+      ['aldenmoor', '801'],
+      ['aldenmoor works', '801'],
+      ['hall of records', '812'],
+      ['lakeside', '804'],
+    ] as const) {
+      const { out } = await search({ query });
+      expect(ids(out), query).toEqual([id]);
+      expect(out.sites[0]?.matched_in, query).toBe('name');
+      expect(out.sites[0], query).not.toHaveProperty('matched_components');
+      expect(out.sites[0], query).not.toHaveProperty('matched_components_total');
+    }
+  });
+
+  it('reports component for a name word plus a component word, listing only what the component word matched', async () => {
+    const { out } = await search({ query: 'aldenmoor velkaro' });
+    expect(out.sites).toHaveLength(1);
+    expect(out.sites[0]).toMatchObject({
+      id_no: '801',
+      matched_in: 'component',
+      matched_components: [VELKARO],
+      matched_components_total: 1,
+    });
+  });
+
+  it('reports description for a component word plus a description word, still listing the component', async () => {
+    const { out } = await search({ query: 'velkaro architect' });
+    expect(out.sites).toHaveLength(1);
+    expect(out.sites[0]).toMatchObject({
+      id_no: '801',
+      matched_in: 'description',
+      matched_components: [VELKARO],
+      matched_components_total: 1,
+    });
+  });
+
+  it('lists every component a component word matches, in UNESCO order', async () => {
+    const { out } = await search({ query: 'brask' });
+    expect(out.sites[0]).toMatchObject({ id_no: '801', matched_in: 'component' });
+    expect(refs(out.sites[0])).toEqual(['801-001', '801-002']);
+    expect(out.sites[0]?.matched_components_total).toBe(2);
+  });
+
+  it('lists at most 10, those matching more component words first, then UNESCO order', async () => {
+    const both = await search({ query: 'fort gate' });
+    expect(both.out.sites).toHaveLength(1);
+    expect(both.out.sites[0]?.matched_in).toBe('component');
+    expect(refs(both.out.sites[0])).toEqual(
+      ['003', '010', '001', '002', '005', '006', '008', '009', '011', '012'].map((n) => `805-${n}`),
+    );
+    expect(both.out.sites[0]?.matched_components_total).toBe(13);
+    const fort = await search({ query: 'fort' });
+    expect(refs(fort.out.sites[0])).toEqual(FORTS.slice(0, 10).map((n) => `805-${n}`));
+    expect(fort.out.sites[0]?.matched_components_total).toBe(12);
+  });
+
+  it('lists all ten, with no pointer to unesco_get_site, when exactly ten components match', async () => {
+    const { out, result } = await search({ query: 'ward' });
+    expect(out.sites[0]).toMatchObject({ id_no: '806', matched_in: 'component' });
+    expect(refs(out.sites[0])).toEqual(
+      Array.from({ length: 10 }, (_, i) => `806-${String(i + 1).padStart(3, '0')}`),
+    );
+    expect(out.sites[0]?.matched_components_total).toBe(10);
+    const body = textBlocks(result)[0] ?? '';
+    expect(body).toContain(
+      '\n**Matched components** (10 of 10):\n- 806-001 — Terrace Ward 1 (43, 13)\n',
+    );
+    expect(body).not.toContain('unesco_get_site');
+  });
+
+  it('never matches a nameless component or an entry the parser could not read', async () => {
+    const { out } = await search({ query: 'fort' });
+    const listed = out.sites[0]?.matched_components ?? [];
+    expect(listed.every((c) => typeof c.name === 'string' && c.name.length > 0)).toBe(true);
+    expect(out.sites[0]?.matched_components_total).toBe(FORTS.length);
+    for (const query of ['hidden', 'nbsp']) {
+      expect((await search({ query })).out.totalCount, query).toBe(0);
+    }
+  });
+
+  it('renders the listed components, the cut, and the unesco_get_site pointer in format()', async () => {
+    const { result } = await search({ query: 'fort' });
+    const body = textBlocks(result)[0] ?? '';
+    expect(body).toContain(
+      [
+        '### Frontier Wall (id_no 805)',
+        'Cultural · Europe and North America · France (FR) · Transboundary: No · Inscribed 1990 · Criteria: iv · Not in Danger · Area: 10 ha · Coordinates: Not available · Matched in: component',
+        '',
+        '**Matched components** (10 of 12; unesco_get_site lists every component of the site):',
+        ...[
+          ['001', 'North Fort'],
+          ['003', 'Fort Gate East'],
+          ['005', 'Fortlet Five'],
+          ['006', 'Fort Six'],
+          ['008', 'Fort Eight'],
+          ['009', 'Fort Nine'],
+          ['010', 'West Fort Gate'],
+          ['011', 'Fort Eleven'],
+          ['012', 'Fort Twelve'],
+          ['013', 'Fort Thirteen'],
+        ].map(([n, name]) => `- 805-${n} — ${name} (${Number(`50.${n?.slice(1)}`)}, 7)`),
+        '',
+        '> A synthetic frontier wall.',
+      ].join('\n'),
+    );
+    const hall = await search({ query: 'velkaro hall' });
+    expect(textBlocks(hall.result)[0]).toContain(
+      '· Matched in: component\n\n**Matched components** (1 of 1):\n- 801-002 — Velkaro Hall, Brask (60.2, 25)\n\n> Buildings by the synthetic architect Aldenmoor.',
+    );
+  });
+
+  it('changes no match, order, matched_in, or listed component when include_description is false', async () => {
+    for (const query of ['fort gate', 'velkaro architect', 'unity chapel', 'tower']) {
+      const shown = await search({ query, limit: 50 });
+      const omitted = await search({ query, limit: 50, include_description: false });
+      const strip = (out: SearchOutput) =>
+        out.sites.map(({ description: _d, ...rest }) => rest as Omit<SiteRow, 'description'>);
+      expect(omitted.out.totalCount, query).toBe(shown.out.totalCount);
+      expect(strip(omitted.out), query).toEqual(strip(shown.out));
+      expect(omitted.out.sites.every((s) => s.description === undefined)).toBe(true);
+    }
+    const { out, result } = await search({ query: 'velkaro', include_description: false });
+    expect(out.sites[0]).toMatchObject({ matched_components: [VELKARO] });
+    expect(textBlocks(result)[0]).toContain(
+      '**Matched components** (1 of 1):\n- 801-002 — Velkaro Hall, Brask (60.2, 25)',
+    );
+  });
+
+  it('carries nearest_component beside matched_components under near, and sorts by distance when asked', async () => {
+    const near = { latitude: 60.2, longitude: 25, radius_km: 200 };
+    const byDistance = await search({ query: 'hall', near, sort: 'distance' });
+    expect(byDistance.out.sites.map((s) => [s.id_no, s.matched_in, s.distance_km])).toEqual([
+      ['801', 'component', 0],
+      ['812', 'name', 89],
+    ]);
+    expect(row(byDistance.out, '801')).toMatchObject({
+      nearest_component: VELKARO,
+      matched_components: [VELKARO],
+      matched_components_total: 1,
+    });
+    expect(row(byDistance.out, '812')).not.toHaveProperty('matched_components');
+    const byRelevance = await search({ query: 'hall', near });
+    expect(ids(byRelevance.out)).toEqual(['812', '801']);
+  });
+
+  it('counts component matches in totalCount, the facets, and the single-removal fragment', async () => {
+    const { out } = await search({ query: 'tower' });
+    expect(out.totalCount).toBe(5);
+    expect(out.facets.category).toEqual({ Cultural: 5, Natural: 0, Mixed: 0 });
+    expect(out.facets.top_countries).toEqual([{ code: 'FR', name: 'France', count: 5 }]);
+    const combined = await search({ query: 'tower', category: 'Natural' });
+    expect(combined.out.totalCount).toBe(0);
+    expect(combined.out.notice).toContain('Removing category alone would match 5 sites.');
+  });
+
+  it('pages a component-tier query by cursor, returning each site once', async () => {
+    const pages: [string, string | undefined][][] = [];
+    let cursor: string | undefined;
+    do {
+      const { out } = await search({ query: 'tower', limit: 2, cursor });
+      pages.push(out.sites.map((s) => [s.id_no, s.matched_in]));
+      expect(out.totalCount).toBe(5);
+      cursor = out.next_cursor;
+    } while (cursor && pages.length < 10);
+    expect(pages).toEqual([
+      [
+        ['807', 'name'],
+        ['808', 'component'],
+      ],
+      [
+        ['809', 'component'],
+        ['810', 'component'],
+      ],
+      [['811', 'description']],
+    ]);
+    const { fp, asOf } = await cursorFor({ query: 'tower' });
+    const past = await search({
+      query: 'tower',
+      cursor: makeCursor({ offset: 5, limit: 2, fp, asOf }),
+    });
+    expect(past.out.sites).toEqual([]);
+    expect(past.out.notice).toBe(
+      'The cursor is past the last of 5 results. Call unesco_search_sites without cursor to start over.',
+    );
+  });
+
+  it('advertises the component tier and the matched component fields', () => {
+    const json = z.toJSONSchema(searchSitesTool.output, { io: 'output' }) as unknown as {
+      properties: {
+        sites: {
+          items: {
+            properties: Record<
+              string,
+              {
+                enum?: string[];
+                items?: {
+                  additionalProperties?: boolean;
+                  properties?: Record<string, unknown>;
+                  required?: string[];
+                };
+                type?: string;
+              }
+            >;
+            required: string[];
+          };
+        };
+      };
+    };
+    const rowSchema = json.properties.sites.items;
+    expect(rowSchema.properties.matched_in?.enum).toEqual([
+      'name',
+      'component',
+      'description',
+      'justification',
+    ]);
+    expect(rowSchema.required).not.toContain('matched_components');
+    expect(rowSchema.required).not.toContain('matched_components_total');
+    const item = rowSchema.properties.matched_components?.items;
+    expect(Object.keys(item?.properties ?? {}).sort()).toEqual([
+      'latitude',
+      'longitude',
+      'name',
+      'ref',
+    ]);
+    expect(item?.required?.sort()).toEqual(['latitude', 'longitude', 'name', 'ref']);
+    expect(item?.additionalProperties).toBe(false);
+    expect(rowSchema.properties.matched_components_total?.type).toBe('number');
+  });
+
+  it('names component names in the tool, query, and matched_in descriptions and the zero-hit fragment', async () => {
+    expect(searchSitesTool.description).toContain('component names');
+    expect(searchSitesTool.input.shape.query.description).toContain('component names');
+    const json = z.toJSONSchema(searchSitesTool.output, { io: 'output' }) as unknown as {
+      properties: { sites: { items: { properties: Record<string, { description?: string }> } } };
+    };
+    expect(json.properties.sites.items.properties.matched_in?.description).toContain(
+      'component names',
+    );
+    const { out } = await search({ query: 'nomatchword' });
+    expect(out.notice).toBe(
+      'No site\'s name, component names, description, or statement of Outstanding Universal Value contains every word of "nomatchword" (each word matches at the start of a word, and all are required). Try fewer or broader words.',
+    );
+  });
+});
+
+describe('unesco_search_sites — matched components in components_list order', () => {
+  /**
+   * 830 lists its components out of ref order, as most serial sites in the
+   * export do (208-001, 208-005, …): twelve name `bastion`, two of them also `gate`.
+   */
+  const PARTS = [
+    { name: 'Bastion North', ref: '830-012', latitude: 45.01, longitude: 9 },
+    { name: 'Bastion Gate', ref: '830-003', latitude: 45.02, longitude: 9 },
+    { name: 'Bastion Quay', ref: '830-007', latitude: 45.03, longitude: 9 },
+    { name: 'Bastion Mill', ref: '830-001', latitude: 45.04, longitude: 9 },
+    { name: 'Bastion West', ref: '830-010', latitude: 45.05, longitude: 9 },
+    { name: 'Bastion Gate East', ref: '830-002', latitude: 45.06, longitude: 9 },
+    { name: 'Bastion Hill', ref: '830-011', latitude: 45.07, longitude: 9 },
+    { name: 'Bastion Ford', ref: '830-005', latitude: 45.08, longitude: 9 },
+    { name: 'Bastion Wharf', ref: '830-009', latitude: 45.09, longitude: 9 },
+    { name: 'Bastion Yard', ref: '830-004', latitude: 45.1, longitude: 9 },
+    { name: 'Bastion Keep', ref: '830-008', latitude: 45.11, longitude: 9 },
+    { name: 'Bastion Moat', ref: '830-006', latitude: 45.12, longitude: 9 },
+  ];
+
+  beforeEach(() => {
+    useHub({
+      rows: {
+        whc001: [
+          whcRow({
+            id_no: '830',
+            name_en: 'Rampart Ensemble',
+            name_fr: 'Ensemble des Remparts',
+            coordinates: multiPoint(
+              ...PARTS.map((p): [number, number] => [p.longitude, p.latitude]),
+            ),
+            components_count: PARTS.length,
+            components_list: componentsList(PARTS),
+          }),
+        ],
+      },
+    });
+  });
+
+  const refs = (out: SearchOutput) => out.sites[0]?.matched_components?.map((c) => c.ref);
+
+  it('lists and caps the matches by their components_list position, not by ref', async () => {
+    const { out } = await search({ query: 'bastion' });
+    expect(refs(out)).toEqual(PARTS.slice(0, 10).map((p) => p.ref));
+    expect(out.sites[0]?.matched_components_total).toBe(12);
+  });
+
+  it('puts components matching more words first, each group in components_list order', async () => {
+    const { out } = await search({ query: 'bastion gate' });
+    expect(refs(out)).toEqual(
+      ['003', '002', '012', '007', '001', '010', '011', '005', '009', '004'].map((n) => `830-${n}`),
+    );
+    expect(out.sites[0]?.matched_components_total).toBe(12);
+  });
+});
+
 describe('unesco_search_sites — zero-hit notices', () => {
   beforeEach(() => {
     useHub();
@@ -1153,7 +1581,7 @@ describe('unesco_search_sites — facets', () => {
         id_no: String(400 + i),
         name_en: `Spread Site ${i}`,
         states_names: [`State ${i}`],
-        iso_codes: ['AD', 'AE', 'AF', 'AG', 'AL', 'AM', 'AO', 'AR', 'AT', 'AU', 'AZ', 'BA'][i],
+        iso_codes: [['AD', 'AE', 'AF', 'AG', 'AL', 'AM', 'AO', 'AR', 'AT', 'AU', 'AZ', 'BA'][i]],
       }),
     );
     useHub({ rows: { whc001: rows } });
@@ -1275,7 +1703,7 @@ describe('unesco_search_sites — format() parity and text safety', () => {
       id_no: '910',
       name_en: 'Evil\r\n# Injected Heading',
       states_names: ['State\r\nOne', 'State Two'],
-      iso_codes: 'FR, DE',
+      iso_codes: ['FR', 'DE'],
       transboundary: 'True',
       short_description_en: 'First line.\n\n## Not A Heading\n- not a list',
     });
@@ -1399,6 +1827,48 @@ describe('unesco_search_sites — format() parity and text safety', () => {
       '· Distance: 0.4 km (component 2-001 # ref Part \\[x\\](http://e.test) ## Name at 1, 2)',
     );
     expect(text.split('\n').some((l) => l.startsWith('# ref') || l.startsWith('## Name'))).toBe(
+      false,
+    );
+  });
+
+  it('flattens and escapes matched component refs and names, keeping each on its list line', () => {
+    const site = {
+      id_no: '3',
+      name: 'Serial',
+      category: 'Cultural',
+      states: ['S'],
+      country_codes: ['AA'],
+      region: 'Africa',
+      transboundary: false,
+      inscribed_year: 2000,
+      criteria: [],
+      in_danger: false,
+      matched_in: 'component',
+      matched_components: [
+        {
+          ref: '3-001\n# ref',
+          name: 'Gate [x](http://e.test)\r\n- item',
+          latitude: 1,
+          longitude: 2,
+        },
+        { ref: '3-002', name: '<b>Hall</b>', latitude: -3.5, longitude: 4.25 },
+      ],
+      matched_components_total: 2,
+    } satisfies SiteRow;
+    const [block] = searchSitesTool.format?.({ sites: [site] } as never) ?? [];
+    const text = block?.type === 'text' ? block.text : '';
+    expect(text).toContain(
+      [
+        '· Not in Danger · Area: Not available · Coordinates: Not available · Matched in: component',
+        '',
+        '**Matched components** (2 of 2):',
+        '- 3-001 # ref — Gate \\[x\\](http://e.test) - item (1, 2)',
+        '- 3-002 — \\<b\\>Hall\\</b\\> (-3.5, 4.25)',
+        '',
+        'Description: Not available',
+      ].join('\n'),
+    );
+    expect(text.split('\n').some((l) => l.startsWith('# ref') || l === '- item (1, 2)')).toBe(
       false,
     );
   });

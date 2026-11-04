@@ -1,7 +1,8 @@
 /**
  * @fileoverview Tests for the server instructions: under the 2,048-character
- * budget, and naming every tool defined in `src/mcp-server/tools/definitions/`,
- * so a tool added without an instructions update fails here.
+ * budget, naming every tool defined in `src/mcp-server/tools/definitions/` and
+ * every skill under `skills/`, so a tool or skill added without an instructions
+ * update fails here.
  * @module tests/instructions.test
  */
 
@@ -16,6 +17,10 @@ const toolNamesIn = (file: string) =>
   [...readFileSync(new URL(file, DEFINITIONS), 'utf8').matchAll(/\btool\(\s*'(\w+)'/g)].map(
     (match) => match[1] as string,
   );
+/** The skill folders `createApp({ skills: 'skills' })` serves. */
+const SKILL_NAMES = readdirSync(new URL('../skills/', import.meta.url), {
+  withFileTypes: true,
+}).flatMap((entry) => (entry.isDirectory() ? [entry.name] : []));
 
 describe('SERVER_INSTRUCTIONS', () => {
   it('stays under 2,048 characters', () => {
@@ -44,5 +49,12 @@ describe('SERVER_INSTRUCTIONS', () => {
     expect(SERVER_INSTRUCTIONS).toContain(
       "A site's, reserve's, or geopark's coordinates work as near",
     );
+  });
+
+  it('points at every skill published from the root skills/ tree by its skill:// URI', () => {
+    expect(SKILL_NAMES.length).toBeGreaterThan(0);
+    for (const name of SKILL_NAMES) {
+      expect(SERVER_INSTRUCTIONS).toContain(`skill://${name}/SKILL.md`);
+    }
   });
 });

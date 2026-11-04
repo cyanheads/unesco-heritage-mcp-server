@@ -29,6 +29,7 @@ import {
   readCursor,
   topCounts,
   wordMatches,
+  wordTiers,
 } from '@/services/unesco-datahub/search.js';
 
 describe('foldText', () => {
@@ -111,6 +112,40 @@ describe('matchTier', () => {
 
   it('returns tier 0 for no words (vacuous match)', () => {
     expect(matchTier([], tiers)).toBe(0);
+  });
+});
+
+describe('wordTiers', () => {
+  const tiers = [
+    foldTier('Alder Town'),
+    foldTier('North Gate', 'Market Hall'),
+    foldTier('a walled town with a gate'),
+    foldTier('criterion synthetic'),
+  ];
+
+  it("gives each word its own first tier, in the query's word order", () => {
+    expect(wordTiers(['synthetic', 'gate', 'alder', 'walled', 'hall'], tiers)).toEqual([
+      3, 1, 0, 2, 1,
+    ]);
+  });
+
+  it('reports a word found in several tiers at the earliest one', () => {
+    // "town" is in tiers 0 and 2, "gate" in tiers 1 and 2.
+    expect(wordTiers(['town', 'gate'], tiers)).toEqual([0, 1]);
+  });
+
+  it('returns undefined when any word matches no tier, and [] for no words', () => {
+    expect(wordTiers(['gate', 'missing'], tiers)).toBeUndefined();
+    expect(wordTiers([], tiers)).toEqual([]);
+  });
+
+  it('agrees with matchTier, which reports the deepest of the first tiers', () => {
+    for (const words of [['alder'], ['alder', 'hall'], ['hall', 'walled'], ['gate', 'synthetic']]) {
+      expect(matchTier(words, tiers), words.join(' ')).toBe(
+        Math.max(...(wordTiers(words, tiers) ?? [])),
+      );
+    }
+    expect(matchTier(['alder', 'hall'], tiers)).toBe(1);
   });
 });
 

@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.2.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/unesco-heritage-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/unesco-heritage-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/unesco-heritage-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.2.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/unesco-heritage-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.4.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/unesco-heritage-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/unesco-heritage-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -54,15 +54,15 @@ UNESCO's World Heritage List, Intangible Cultural Heritage lists, Biosphere Rese
 | `unesco://biosphere-reserve/{mab_id}` | One biosphere reserve record |
 | `unesco://geopark/{ugg_id}` | One UNESCO Global Geopark record |
 
-Each resource mirrors a get tool.
+Each resource mirrors a get tool. The server also serves its `unesco-heritage-guide` skill at `skill://unesco-heritage-guide/SKILL.md`: gates and chains for landmark lookups, empty results, `near` searches, and partial answers.
 
 ## Capability reference
 
 ### `unesco_search_sites` <sub>tool</sub>
 
-- Filters: `query`, `country` (ISO 3166-1 alpha-2 or alpha-3), `category`, `region`, `criteria` (every listed criterion required), `in_danger`, `transboundary`, `inscribed_from` / `inscribed_to`, and `near` (`latitude`, `longitude`, `radius_km` up to 5000, default 100), which matches a site through its representative point or any of its components
+- Filters: `query` (site names in six languages, component names, description, and statement of Outstanding Universal Value), `country` (ISO 3166-1 alpha-2 or alpha-3), `category`, `region`, `criteria` (every listed criterion required), `in_danger`, `transboundary`, `inscribed_from` / `inscribed_to`, and `near` (`latitude`, `longitude`, `radius_km` up to 5000, default 100), which matches a site through its representative point or any of its components
 - Up to 50 sites per page (default 20; a larger `limit`, up to 10,000, is served as 50 and says so in `notice`), continued with `next_cursor`; `sort` takes `relevance`, `name`, `inscribed_newest`, `inscribed_oldest`, `area_largest`, `danger_listed_newest`, or `distance`; `include_description: false` leaves row descriptions out
-- `in_danger: true` is the List of World Heritage in Danger; `totalCount` and `facets` (category, region, Danger status, criteria, top 10 countries) cover the whole match; rows carry `matched_in` when `query` is set, and `distance_km` to the nearest of the site's points (with `nearest_component` when a component is nearer) when `near` is set
+- `in_danger: true` is the List of World Heritage in Danger; `totalCount` and `facets` (category, region, Danger status, criteria, top 10 countries) cover the whole match; rows carry `matched_in` when `query` is set (`name`, `component`, `description`, or `justification`, in rank order) and, when a query word the site's own names lack matched component names, up to 10 `matched_components` with `matched_components_total`; and with `near`, `distance_km` to the nearest of the site's points (with `nearest_component` when a component is nearer)
 
 ---
 
@@ -127,6 +127,7 @@ Each resource mirrors a get tool.
 - `topic`: `criteria`, `countries`, `regions`, `intangible_lists`, `biosphere_networks`, or `datasets`
 - `filter` keeps matching rows; on `countries`, a country name, an ISO code, or a common former name returns the codes every `country` input accepts, with the country's count of sites, intangible elements, reserves, and geoparks
 - `datasets` reports each dataset's record count, `data_as_of`, license, attribution line, and coverage notes
+- When a dataset cannot load, `countries`, `regions`, and `datasets` answer from the others: its counts are absent (never `0`), its `datasets` row carries `available: false` and `retryable`, and the notice names it
 
 ---
 
@@ -167,7 +168,7 @@ Agent-friendly output:
 
 - Attribution on every response: `sources` names each dataset with its `data_as_of` date, license, and credit line
 - Search results report the whole match: `totalCount`, `facets`, and an `applied_filters` echo of the filters and sort the server ran
-- Keyword matching is word-prefix with every word required (up to 16 distinct words), and `matched_in` says which field tier matched; a zero-hit `notice` names the filter whose removal would match the most records
+- Keyword matching is word-prefix with every word required (up to 16 distinct words), and `matched_in` says which field tier matched; site searches also match component names, so a landmark that is part of a serial site finds that site and the components that matched; a zero-hit `notice` names the filter whose removal would match the most records
 - Typed errors (`unknown_country`, `invalid_year_range`, `sort_needs_input`, `cursor_mismatch`, `invalid_cursor`, `*_not_found`, `snapshot_unavailable`) carry a recovery hint naming the next call; `snapshot_unavailable` is `retryable` with `retryAfter` when the Data Hub is unreachable, and not retryable when it rejects the request or serves data the server cannot use
 
 ## Data and licensing
@@ -332,6 +333,7 @@ See [`.env.example`](./.env.example) for the common framework overrides.
 | `src/index.ts` | `createApp()` entry point: registers the tools and resources, serves the server instructions from `src/mcp-server/instructions.ts`, and starts and stops the service. |
 | `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). |
 | `src/mcp-server/resources` | One record resource per dataset. |
+| `skills/` | The published `unesco-heritage-guide` skill, served over MCP and shipped in the npm package, the Docker image, plugin installs, and the `.mcpb` bundle. |
 | `src/mcp-server/shared` | Input schemas and normalizers, enrichment fields, and markdown helpers shared by the tools and resources. |
 | `src/services/unesco-datahub` | UNESCO Data Hub service: snapshot loading and refresh, row validation and repair, search and facets, the ISO 3166 table, and vocabularies. |
 | `tests/` | Unit tests over synthetic fixtures, mirroring the `src/` structure. |
