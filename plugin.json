@@ -1,0 +1,32 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "unesco-heritage-mcp-server",
+  "version": "0.2.1",
+  "description": "Search UNESCO World Heritage sites, intangible heritage, biosphere reserves, and Global Geoparks via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
+  "homepage": "https://github.com/cyanheads/unesco-heritage-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/unesco-heritage-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "typescript",
+    "bun",
+    "stdio",
+    "streamable-http",
+    "unesco",
+    "world-heritage",
+    "intangible-cultural-heritage",
+    "biosphere-reserves",
+    "man-and-the-biosphere",
+    "geoparks",
+    "cultural-heritage",
+    "natural-heritage",
+    "open-data"
+  ]
+}
