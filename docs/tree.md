@@ -1,6 +1,6 @@
 # unesco-heritage-mcp-server - Directory Structure
 
-Generated on: 2026-11-04 09:31:55
+Generated on: 2026-11-04 10:15:43
 
 ```text
 unesco-heritage-mcp-server/
@@ -26,6 +26,7 @@ unesco-heritage-mcp-server/
 ├── changelog/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
+│   ├── 0.3.x/
 │   └── template.md
 ├── docs/
 │   └── design.md

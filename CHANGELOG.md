@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-11-04
+
+The server loads the republished whc001 and ich001 Data Hub exports, unesco_search_sites matches component names (Finlandia Hall finds Aalto Works), unesco_list_reference answers from the datasets that loaded, and the server publishes its first skill, unesco-heritage-guide, over MCP.
+
 ## [0.2.1](changelog/0.2.x/0.2.1.md) — 2026-10-17
 
 The site and intangible heritage get tools take description_language, limit and max_components above their per-call cap are served at the cap, a rejected Data Hub export reports as non-retryable, and near matching, entity-encoded reserve websites, and malformed-cursor recovery are fixed.
