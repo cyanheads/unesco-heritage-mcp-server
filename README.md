@@ -39,7 +39,7 @@ UNESCO's World Heritage List, Intangible Cultural Heritage lists, Biosphere Rese
 | `unesco_get_site` | Fetch a site's full record: statement of Outstanding Universal Value, criteria with meanings, component parts, coordinates, and image credit |
 | `unesco_search_intangible_heritage` | Search the three intangible heritage lists by keyword, country, list, inscription years, multinational status, or linked World Heritage site |
 | `unesco_get_intangible_heritage_element` | Fetch an element's full record: description, list, countries, concept terms, linked sites, and image credit |
-| `unesco_search_biosphere_reserves` | Search biosphere reserves by keyword, country, region, MAB regional network, designation years, transboundary or SIDS status, or distance from a point |
+| `unesco_search_biosphere_reserves` | Search biosphere reserves by keyword, country, region, MAB regional network, designation years, periodic review, transboundary or SIDS status, or distance from a point |
 | `unesco_get_biosphere_reserve` | Fetch a reserve's full record: ecological and socio-economic profile, zoned areas and population, review years, and coordinates |
 | `unesco_search_geoparks` | Search UNESCO Global Geoparks by keyword, country, designation years, transnational status, or distance from a point |
 | `unesco_get_geopark` | Fetch a geopark's full record: introduction, description, account of sustaining local communities, recorded area and population, and coordinates |
@@ -61,14 +61,14 @@ Each resource mirrors a get tool. The server also serves its `unesco-heritage-gu
 ### `unesco_search_sites` <sub>tool</sub>
 
 - Filters: `query` (site names in six languages, component names, description, and statement of Outstanding Universal Value), `country` (ISO 3166-1 alpha-2 or alpha-3), `category`, `region`, `criteria` (every listed criterion required), `in_danger`, `transboundary`, `inscribed_from` / `inscribed_to`, and `near` (`latitude`, `longitude`, `radius_km` up to 5000, default 100), which matches a site through its representative point or any of its components
-- Up to 50 sites per page (default 20; a larger `limit`, up to 10,000, is served as 50 and says so in `notice`), continued with `next_cursor`; `sort` takes `relevance`, `name`, `inscribed_newest`, `inscribed_oldest`, `area_largest`, `danger_listed_newest`, or `distance`; `include_description: false` leaves row descriptions out
-- `in_danger: true` is the List of World Heritage in Danger; `totalCount` and `facets` (category, region, Danger status, criteria, top 10 countries) cover the whole match; rows carry `matched_in` when `query` is set (`name`, `component`, `description`, or `justification`, in rank order) and, when a query word the site's own names lack matched component names, up to 10 `matched_components` with `matched_components_total`; and with `near`, `distance_km` to the nearest of the site's points (with `nearest_component` when a component is nearer)
+- Up to 10,000 sites per page (default 20), continued with `next_cursor`; `sort` takes `relevance`, `name`, `inscribed_newest`, `inscribed_oldest`, `area_largest`, `danger_listed_newest`, or `distance`; `include_description: false` leaves row descriptions out
+- `in_danger: true` is the List of World Heritage in Danger; `totalCount` and `facets` (category, region, Danger status, criteria, top 10 countries) cover the whole match; rows carry `matched_in` when `query` is set (`name`, `component`, `description`, or `justification`, in rank order) and, when a query word the site's own names lack matched component names, up to 10 `matched_components` with `matched_components_total`; and with `near`, `distance_km` to the nearest of the site's points (with `nearest_component` when a component is nearer); every row carries `components_total` (UNESCO's component count; a serial site has no `latitude`/`longitude` of its own)
 
 ---
 
 ### `unesco_get_site` <sub>tool</sub>
 
-- One site by `id_no`: a number, a digit string, or the site's whc.unesco.org page URL; `max_components` lists up to 1000 component parts (default 20; a larger value, up to 10,000, is served as 1000 and says so in `notice`)
+- One site by `id_no`: a number, a digit string, or the site's whc.unesco.org page URL; `max_components` lists up to 10,000 component parts (default 20)
 - Description, statement of Outstanding Universal Value, `criteria[]` with meanings and `source: "recorded" | "inferred"`, States Parties with ISO codes, coordinates, area, `secondary_years`, Danger-list year, names in six languages, and the main `image` with its credit
 - `description_language` (`en`, `fr`, `es`, `ru`, `ar`, `zh`) returns UNESCO's description in that language and names it in `description_language`; where UNESCO publishes none, the English one comes back as `en` with a `notice`. The statement of Outstanding Universal Value is English only
 - `components_total` is UNESCO's count and `components_unparsed` the entries that could not be read; an unknown id fails as `site_not_found`
@@ -78,7 +78,7 @@ Each resource mirrors a get tool. The server also serves its `unesco-heritage-gu
 ### `unesco_search_intangible_heritage` <sub>tool</sub>
 
 - Filters: `query`, `country`, `list` (Representative List, Urgent Safeguarding List, Register of Good Safeguarding Practices; `RL` / `USL` / `Art18` accepted), `multinational`, `world_heritage_site` (an `id_no`), and `inscribed_from` / `inscribed_to`
-- Up to 50 elements per page (default 20; a larger `limit`, up to 10,000, is served as 50 and says so in `notice`), continued with `next_cursor`; rows omit the description and carry primary `concepts` and linked `world_heritage_sites`
+- Up to 10,000 elements per page (default 20), continued with `next_cursor`; rows omit the description and carry primary `concepts` and linked `world_heritage_sites`
 - `facets` cover list, multinational status, the top 10 countries, and the top 10 concept terms
 
 ---
@@ -93,16 +93,16 @@ Each resource mirrors a get tool. The server also serves its `unesco-heritage-gu
 
 ### `unesco_search_biosphere_reserves` <sub>tool</sub>
 
-- Filters: `query` (name, introduction, and ecological or socio-economic text; there is no biome field, so search habitat words), `country`, `region`, `regional_network` (name or acronym), `transboundary`, `sids`, `designated_from` / `designated_to`, and `near`
-- Up to 50 reserves per page (default 20; a larger `limit`, up to 10,000, is served as 50 and says so in `notice`), continued with `next_cursor`; `sort` takes `relevance`, `name`, `designated_newest`, `designated_oldest`, `area_largest`, or `distance`; `include_description: false` leaves row introductions out
-- A transboundary reserve appears once per participating country, each with its own `mab_id`; `facets` cover region, regional network, transboundary and SIDS status, and the top 10 countries
+- Filters: `query` (name, introduction, and ecological or socio-economic text; there is no biome field, so search habitat words), `country`, `region`, `regional_network` (name or acronym), `transboundary`, `sids`, `designated_from` / `designated_to`, `reviewed_from` / `reviewed_to` (inclusive bounds on the year of a reserve's latest periodic review; a reserve with no review never matches), `reviewed` (`true` keeps reserves with a recorded review, `false` those with none; `false` with a bound fails as `review_filter_conflict`), and `near`
+- Up to 10,000 reserves per page (default 20), continued with `next_cursor`; `sort` takes `relevance`, `name`, `designated_newest`, `designated_oldest`, `area_largest`, or `distance`; `include_description: false` leaves row introductions out
+- A transboundary reserve appears once per participating country, each with its own `mab_id`; rows carry `last_periodic_review_year` (the highest review year, absent when none is recorded); `facets` cover region, regional network, transboundary and SIDS status, and the top 10 countries
 
 ---
 
 ### `unesco_get_biosphere_reserve` <sub>tool</sub>
 
 - One reserve by `mab_id`, matched without regard to case or accents
-- Introduction, ecological and socio-economic characteristics, terrestrial and marine area by zone, population by zone, designation, extension, renaming, and periodic-review years, coordinates, website, and UNESCO page
+- Introduction, ecological and socio-economic characteristics, terrestrial and marine area by zone, population by zone, designation, extension, renaming, and periodic-review years (in UNESCO's recorded order; a follow-up report year is not a review), coordinates, website, and UNESCO page
 - Areas (hectares) and populations pass through as recorded: zone sums can differ from totals, and a population of `0` can mean none or unreported; an unknown id fails as `biosphere_reserve_not_found`
 
 ---
@@ -110,7 +110,7 @@ Each resource mirrors a get tool. The server also serves its `unesco-heritage-gu
 ### `unesco_search_geoparks` <sub>tool</sub>
 
 - Filters: `query` (name, introduction, description, and community account; search landform words such as volcanic or karst), `country`, `transnational`, `designated_from` / `designated_to`, and `near`, measured to each geopark's one point
-- Up to 50 geoparks per page (default 20; a larger `limit`, up to 10,000, is served as 50 and says so in `notice`), continued with `next_cursor`; `sort` takes `relevance`, `name`, `designated_newest`, `designated_oldest`, `area_largest`, or `distance`; `include_description: false` leaves row introductions out
+- Up to 10,000 geoparks per page (default 20), continued with `next_cursor`; `sort` takes `relevance`, `name`, `designated_newest`, `designated_oldest`, `area_largest`, or `distance`; `include_description: false` leaves row introductions out
 - A transnational geopark is one row listing each of its countries; `facets` cover transnational status and the top 10 countries; a year bound whose range starts at or before 2015 adds a `notice` that geoparks recognized before the designation existed are dated 2015
 
 ---
@@ -169,7 +169,7 @@ Agent-friendly output:
 - Attribution on every response: `sources` names each dataset with its `data_as_of` date, license, and credit line
 - Search results report the whole match: `totalCount`, `facets`, and an `applied_filters` echo of the filters and sort the server ran
 - Keyword matching is word-prefix with every word required (up to 16 distinct words), and `matched_in` says which field tier matched; site searches also match component names, so a landmark that is part of a serial site finds that site and the components that matched; a zero-hit `notice` names the filter whose removal would match the most records
-- Typed errors (`unknown_country`, `invalid_year_range`, `sort_needs_input`, `cursor_mismatch`, `invalid_cursor`, `*_not_found`, `snapshot_unavailable`) carry a recovery hint naming the next call; `snapshot_unavailable` is `retryable` with `retryAfter` when the Data Hub is unreachable, and not retryable when it rejects the request or serves data the server cannot use
+- Typed errors (`unknown_country`, `invalid_year_range`, `review_filter_conflict`, `sort_needs_input`, `cursor_mismatch`, `invalid_cursor`, `*_not_found`, `snapshot_unavailable`) carry a recovery hint naming the next call; `snapshot_unavailable` is `retryable` with `retryAfter` when the Data Hub is unreachable, and not retryable when it rejects the request or serves data the server cannot use
 
 ## Data and licensing
 
@@ -257,7 +257,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
 
 ### Prerequisites
 
-- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+- [Bun v1.4.4](https://bun.sh/) or higher (or Node.js v24+).
 - No API key or account: the UNESCO Data Hub is open.
 
 ### Installation

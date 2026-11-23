@@ -4,7 +4,7 @@ description: Gates and chains for the unesco_* tools over UNESCO's World Heritag
 license: Apache-2.0
 metadata:
   author: cyanheads
-  version: "1.0"
+  version: "1.0.1"
 ---
 
 ## Scope
@@ -38,7 +38,7 @@ A `description` or `justification` hit (the statement of Outstanding Universal V
 
 **Keywords are literal word prefixes, all required.** Each query word must be the start of a word in the searched fields, so use the shortest form: `temple` finds "temples", but `temples` misses "temple". Every added word can only narrow the match, so drop filler words and narrow with `country`, `region`, or the other filters instead. Site names also match in French, Spanish, Russian, Arabic, and Chinese; element names in English and French.
 
-**`near` needs coordinates you bring or a record supplies.** Get a place's coordinates from a geocoder or from a UNESCO record. A serial site has no `latitude`/`longitude` of its own, so take a component's point from unesco_get_site or from a row's `nearest_component`. Every biosphere reserve and geopark has one point. Intangible heritage elements have no coordinates and never match `near`; reach them by country, keyword, or a linked site.
+**`near` needs coordinates you bring or a record supplies.** Get a place's coordinates from a geocoder or from a UNESCO record. A serial site has no `latitude`/`longitude` of its own (its row's `components_total` is above 1), so take a component's point from unesco_get_site or from a row's `nearest_component`. Every biosphere reserve and geopark has one point. Intangible heritage elements have no coordinates and never match `near`; reach them by country, keyword, or a linked site.
 
 **"Nearest" is `near` with `limit: 1`, widened until it hits.** Nothing outside `radius_km` (default 100, at most 5000) comes back, so an empty result only means nothing lies within that radius: widen it and call again. With `near` alone the sort defaults to distance; with a `query` as well, the default is relevance, so set `sort: distance`. A site's `distance_km` runs to its nearest recorded point, and `nearest_component` is set when that point is a component; name the component in the answer, since a serial site's nearest part can be far from the rest of it.
 
