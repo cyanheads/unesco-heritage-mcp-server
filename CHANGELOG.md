@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.1](changelog/0.3.x/0.3.1.md) — 2026-11-23
+
+The server loads whc001, mab001, and eg0001 again after the Data Hub switched its text booleans to lowercase, search tools serve limit and max_components as requested up to 10,000, and unesco_search_biosphere_reserves filters by periodic review.
+
 ## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-11-04
 
 The server loads the republished whc001 and ich001 Data Hub exports, unesco_search_sites matches component names (Finlandia Hall finds Aalto Works), unesco_list_reference answers from the datasets that loaded, and the server publishes its first skill, unesco-heritage-guide, over MCP.

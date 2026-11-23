@@ -1,6 +1,6 @@
 {
   "name": "unesco-heritage-mcp-server",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Search UNESCO World Heritage sites, intangible heritage, biosphere reserves, and Global Geoparks.",
   "author": {
     "name": "cyanheads",
