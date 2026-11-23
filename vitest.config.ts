@@ -12,11 +12,19 @@ import { defineConfig, mergeConfig } from 'vitest/config';
 
 const alias = { '@/': new URL('./src/', import.meta.url).pathname };
 
+/**
+ * Vitest 5.1's forks pool calls `child.channel.unref()`, which Bun's child
+ * processes lack, so under Bun (`bun --bun run test`) the suite runs on worker
+ * threads. Node keeps the base config's forks pool.
+ */
+const bunPool = process.versions.bun ? { pool: 'threads' as const } : {};
+
 export default mergeConfig(
   coreConfig,
   defineConfig({
     resolve: { alias },
     test: {
+      ...bunPool,
       projects: [
         {
           extends: true,
