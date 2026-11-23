@@ -1,9 +1,10 @@
 /**
  * @fileoverview Tests for unesco_search_sites: blank-as-unset inputs, the
- * declared error contracts, paging and cursors, filters, `near`, keyword tiers,
- * zero-hit notices, facets, format() parity with structuredContent, CR/LF in
- * upstream text, upstream failure classes, and the enrichment contract on the
- * zero-result and under-cap pages.
+ * declared error contracts, paging and cursors at any limit up to the ceiling,
+ * filters, `near`, keyword tiers, zero-hit notices, facets, row component
+ * counts and the coordinates fact, format() parity with structuredContent,
+ * CR/LF in upstream text, upstream failure classes, and the enrichment contract
+ * on the zero-result and under-cap pages.
  * @module tests/tools/search-sites.tool.test
  */
 
@@ -443,36 +444,74 @@ describe('unesco_search_sites — paging', () => {
   });
 });
 
-describe('unesco_search_sites — limit above the per-call cap', () => {
+describe('unesco_search_sites — limit above 50 served as requested', () => {
   beforeEach(() => {
     useHub({ rows: { whc001: manyWhcRows(120) } });
   });
 
-  it.each([51, 10_000])(
-    'serves limit %i as the limit-50 page, the clamp leading notice',
+  /** The ids of Loomvale results `from`–`to` (1-based), which name order serves in id order. */
+  const results = (from: number, to: number) =>
+    Array.from({ length: to - from + 1 }, (_, i) => String(3000 + from + i));
+
+  it('serves limit 100 as a 100-row page, cap and applied limit 100, naming no per-call cap', async () => {
+    const { out, text } = await search({ limit: 100 });
+    expect(ids(out)).toEqual(results(1, 100));
+    expect(out).toMatchObject({ totalCount: 120, shown: 100, cap: 100, truncated: true });
+    expect(out.applied_filters.limit).toBe(100);
+    expect(out.next_cursor).toBeDefined();
+    expect(out.notice).toBe('Showing results 1–100 of 120; pass next_cursor to continue.');
+    expect(text).toContain(out.notice as string);
+    expect(text.split('\n')).toContain('- limit: 100');
+    expect(text).not.toContain('per-call cap');
+  });
+
+  it.each([120, 121, 10_000])(
+    'returns the whole match of 120 on one page at limit %i, with no cursor and no notice',
     async (limit) => {
-      const atCap = await search({ limit: 50 });
-      expect(atCap.out.notice).toBe('Showing results 1–50 of 120; pass next_cursor to continue.');
       const { out, text } = await search({ limit });
-      expect(ids(out)).toEqual(ids(atCap.out));
-      expect(out).toMatchObject({ totalCount: 120, shown: 50, cap: 50, truncated: true });
-      expect(out.next_cursor).toBe(atCap.out.next_cursor);
-      expect(out.applied_filters.limit).toBe(50);
-      expect(out.notice).toBe(
-        `limit ${limit} is above the per-call cap of 50, so this page holds at most 50 results. Showing results 1–50 of 120; pass next_cursor to continue.`,
-      );
-      expect(text).toContain(out.notice as string);
-      expect(text.split('\n')).toContain('- limit: 50');
+      expect(ids(out)).toEqual(results(1, 120));
+      expect(out).toMatchObject({ totalCount: 120, shown: 120, cap: limit, truncated: false });
+      expect(out.applied_filters.limit).toBe(limit);
+      expect(out.next_cursor).toBeUndefined();
+      expect(out.notice).toBeUndefined();
+      expect(text).not.toContain('Next cursor:');
+      expect(text).not.toContain('per-call cap');
     },
   );
 
-  it('continues a clamped page with results 51–100', async () => {
-    const first = await search({ limit: 51 });
-    const second = await search({ limit: 51, cursor: first.out.next_cursor });
-    expect(ids(second.out)).toEqual(Array.from({ length: 50 }, (_, i) => String(3051 + i)));
-    expect(second.out.notice).toBe(
-      'limit 51 is above the per-call cap of 50, so this page holds at most 50 results. Showing results 51–100 of 120; pass next_cursor to continue.',
+  it('continues a cursor from its offset with the limit of each call, to the last page', async () => {
+    const first = await search({ limit: 60 });
+    expect(ids(first.out)).toEqual(results(1, 60));
+    const second = await search({ limit: 55, cursor: first.out.next_cursor });
+    expect(ids(second.out)).toEqual(results(61, 115));
+    expect(second.out).toMatchObject({ shown: 55, cap: 55, truncated: true });
+    expect(second.out.notice).toBe('Showing results 61–115 of 120; pass next_cursor to continue.');
+    const last = await search({ limit: 100, cursor: second.out.next_cursor });
+    expect(ids(last.out)).toEqual(results(116, 120));
+    expect(last.out).toMatchObject({ shown: 5, cap: 100, truncated: false });
+    expect(last.out.next_cursor).toBeUndefined();
+    expect(last.out.notice).toBeUndefined();
+  });
+
+  it('continues a cursor minted at offset 50 with limit 50 as results 51–110 under limit 60', async () => {
+    const { fp, asOf } = await cursorFor({});
+    const cursor = makeCursor({ offset: 50, limit: 50, fp, asOf });
+    const { out } = await search({ limit: 60, cursor });
+    expect(ids(out)).toEqual(results(51, 110));
+    expect(out).toMatchObject({ shown: 60, cap: 60, truncated: true });
+    expect(out.notice).toBe('Showing results 51–110 of 120; pass next_cursor to continue.');
+  });
+
+  it('still rejects the cursor of a 100-row page when a filter changes', async () => {
+    const first = await search({ limit: 100 });
+    const error = errorOf(
+      await runToolContract(searchSitesTool, {
+        limit: 100,
+        inscribed_from: 1990,
+        cursor: first.out.next_cursor,
+      } as never),
     );
+    expect(error.data?.reason).toBe('cursor_mismatch');
   });
 
   it('rejects limit 10001, naming the 10000 ceiling', async () => {
@@ -819,10 +858,10 @@ describe('unesco_search_sites — near over representative points and components
       return lines[heading + 1] ?? '';
     };
     expect(factsOf('501')).toContain(
-      '· Coordinates: 10, 10 · Distance: 5.6 km (component 501-002 Quayside Lodge at 60.05, 5)',
+      '· Coordinates: 10, 10 · Components: 3 · Distance: 5.6 km (component 501-002 Quayside Lodge at 60.05, 5)',
     );
     expect(factsOf('502')).toContain(
-      '· Coordinates: Not available · Distance: 3.3 km (component 502-002 at 59.97, 5)',
+      '· Coordinates: per component (unesco_get_site lists them) · Components: 2 · Distance: 3.3 km (component 502-002 at 59.97, 5)',
     );
     expect(factsOf('505')).toMatch(/· Distance: 2\.2 km$/);
     expect(out.sites).toHaveLength(5);
@@ -942,9 +981,9 @@ describe('unesco_search_sites — near over the GeoJSON coordinates UNESCO expor
     expect(out.sites[1]).toMatchObject({ latitude: 60.2, longitude: 5 });
     const text = textBlocks(result)[0] ?? '';
     expect(text).toContain(
-      '· Coordinates: Not available · Distance: 5.6 km (component 701rev-002 Quay House at 60.05, 5)',
+      '· Coordinates: per component (unesco_get_site lists them) · Components: 3 · Distance: 5.6 km (component 701rev-002 Quay House at 60.05, 5)',
     );
-    expect(text).toContain('· Coordinates: 60.2, 5 · Distance: 22.2 km');
+    expect(text).toContain('· Coordinates: 60.2, 5 · Components: 1 · Distance: 22.2 km');
   });
 
   it('counts only the site with neither a point nor a component as never matching near', async () => {
@@ -1216,7 +1255,8 @@ describe('unesco_search_sites — component name tier', () => {
     expect(body).toContain(
       '\n**Matched components** (10 of 10):\n- 806-001 — Terrace Ward 1 (43, 13)\n',
     );
-    expect(body).not.toContain('unesco_get_site');
+    // The coordinates fact names unesco_get_site for this serial site; the list header must not.
+    expect(body).not.toContain('unesco_get_site lists every component');
   });
 
   it('never matches a nameless component or an entry the parser could not read', async () => {
@@ -1235,7 +1275,7 @@ describe('unesco_search_sites — component name tier', () => {
     expect(body).toContain(
       [
         '### Frontier Wall (id_no 805)',
-        'Cultural · Europe and North America · France (FR) · Transboundary: No · Inscribed 1990 · Criteria: iv · Not in Danger · Area: 10 ha · Coordinates: Not available · Matched in: component',
+        'Cultural · Europe and North America · France (FR) · Transboundary: No · Inscribed 1990 · Criteria: iv · Not in Danger · Area: 10 ha · Coordinates: per component (unesco_get_site lists them) · Components: 17 · Matched in: component',
         '',
         '**Matched components** (10 of 12; unesco_get_site lists every component of the site):',
         ...[
@@ -1784,6 +1824,7 @@ describe('unesco_search_sites — format() parity and text safety', () => {
       criteria: ['vi'],
       criteria_inferred: ['vi'],
       in_danger: true,
+      components_total: 0,
       distance_km: 12.5,
       matched_in: 'name',
       description: 'd1\nd2',
@@ -1813,6 +1854,7 @@ describe('unesco_search_sites — format() parity and text safety', () => {
       inscribed_year: 2000,
       criteria: [],
       in_danger: false,
+      components_total: 2,
       distance_km: 0.4,
       nearest_component: {
         ref: '2-001\n# ref',
@@ -1843,6 +1885,7 @@ describe('unesco_search_sites — format() parity and text safety', () => {
       inscribed_year: 2000,
       criteria: [],
       in_danger: false,
+      components_total: 2,
       matched_in: 'component',
       matched_components: [
         {
@@ -1859,7 +1902,7 @@ describe('unesco_search_sites — format() parity and text safety', () => {
     const text = block?.type === 'text' ? block.text : '';
     expect(text).toContain(
       [
-        '· Not in Danger · Area: Not available · Coordinates: Not available · Matched in: component',
+        '· Not in Danger · Area: Not available · Coordinates: per component (unesco_get_site lists them) · Components: 2 · Matched in: component',
         '',
         '**Matched components** (2 of 2):',
         '- 3-001 # ref — Gate \\[x\\](http://e.test) - item (1, 2)',
@@ -1874,6 +1917,123 @@ describe('unesco_search_sites — format() parity and text safety', () => {
   });
 });
 
+describe('unesco_search_sites — components_total and the coordinates fact', () => {
+  beforeEach(() => {
+    useHub();
+  });
+
+  /** UNESCO's `components_count` per id_no, as the fixture rows record it. */
+  const COUNTS = new Map(WHC_ROWS.map((r) => [String(r.id_no), Number(r.components_count)]));
+
+  /** The facts line under a site's heading in the first content block. */
+  const factsOf = (body: string, id: string) => {
+    const lines = body.split('\n');
+    return lines[lines.findIndex((l) => l.endsWith(`(id_no ${id})`)) + 1] ?? '';
+  };
+
+  it("carries UNESCO's component count on every row of every page", async () => {
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const { out } = await search({ limit: 15, cursor });
+      for (const s of out.sites) expect(s.components_total, s.id_no).toBe(COUNTS.get(s.id_no));
+      seen.push(...ids(out));
+      cursor = out.next_cursor;
+    } while (cursor && seen.length < 100);
+    expect(seen).toHaveLength(39);
+  });
+
+  it('reports the count UNESCO records, not the number of entries the parser could read', async () => {
+    // 108 records 5 components; its fifth entry has an out-of-range latitude and is skipped.
+    const { out, text } = await search({ query: 'reedhaven' });
+    expect(out.sites[0]).toMatchObject({ id_no: '108', components_total: 5 });
+    expect(text).toContain('· Coordinates: 51, 9 · Components: 5 ·');
+  });
+
+  it.each([
+    ['a point and components', 'alderfen', '101', 3, true, 'Coordinates: 48, 2 · Components: 3'],
+    [
+      'a point and no components',
+      'vessel',
+      '104',
+      0,
+      true,
+      'Coordinates: 35.7, 139.7 · Components: none listed',
+    ],
+    [
+      'components and no point',
+      'tarnwick',
+      '103',
+      1,
+      false,
+      'Coordinates: per component (unesco_get_site lists them) · Components: 1',
+    ],
+    [
+      'neither a point nor components',
+      'hollowmere',
+      '105',
+      0,
+      false,
+      'Coordinates: Not available · Components: none listed',
+    ],
+  ])('renders a site with %s on both surfaces', async (_label, query, id, total, point, facts) => {
+    const { result, out } = await search({ query });
+    const site = out.sites.find((s) => s.id_no === id) as SiteRow;
+    expect(site.components_total).toBe(total);
+    expect('latitude' in site && 'longitude' in site).toBe(point);
+    expect(factsOf(textBlocks(result)[0] ?? '', id)).toContain(` · ${facts} · Matched in: name`);
+  });
+
+  it('carries the count on component-match rows, which print the per-component coordinates', async () => {
+    useHub({ rows: { whc001: COMPONENT_TIER_ROWS } });
+    const { result, out } = await search({ query: 'fort' });
+    expect(out.sites[0]).toMatchObject({
+      id_no: '805',
+      matched_in: 'component',
+      components_total: 17,
+    });
+    expect(out.sites[0]).not.toHaveProperty('latitude');
+    expect(factsOf(textBlocks(result)[0] ?? '', '805')).toContain(
+      '· Coordinates: per component (unesco_get_site lists them) · Components: 17 · Matched in: component',
+    );
+  });
+
+  it('carries the count on near rows, the fact before the distance', async () => {
+    useHub({ rows: { whc001: NEAR_SITE_ROWS } });
+    const { result, out } = await search({ near: { ...NEAR_POINT, radius_km: 30 } });
+    expect(out.sites.map((s) => [s.id_no, s.components_total])).toEqual([
+      ['505', 1],
+      ['502', 2],
+      ['507', 1],
+      ['501', 3],
+      ['506', 1],
+    ]);
+    expect(factsOf(textBlocks(result)[0] ?? '', '505')).toMatch(
+      /· Coordinates: 60\.02, 5 · Components: 1 · Distance: 2\.2 km$/,
+    );
+  });
+
+  it('advertises components_total as a required number and says a serial site has no point of its own', () => {
+    const json = z.toJSONSchema(searchSitesTool.output, { io: 'output' }) as unknown as {
+      properties: {
+        sites: {
+          items: {
+            properties: Record<string, { description?: string; type?: string }>;
+            required: string[];
+          };
+        };
+      };
+    };
+    const rowSchema = json.properties.sites.items;
+    expect(rowSchema.required).toContain('components_total');
+    expect(rowSchema.properties.components_total?.type).toBe('number');
+    expect(rowSchema.properties.components_total?.description).toContain('unesco_get_site');
+    expect(rowSchema.required).not.toContain('latitude');
+    expect(rowSchema.properties.latitude?.description).toContain('serial site');
+    expect(rowSchema.properties.longitude?.description).toContain('serial site');
+  });
+});
+
 describe('unesco_search_sites — include_description', () => {
   beforeEach(() => {
     useHub();
@@ -1883,16 +2043,16 @@ describe('unesco_search_sites — include_description', () => {
     '**3 World Heritage sites on this page**',
     '',
     '### Brindle Frontier Forest (id_no 102)',
-    'Natural · Europe and North America · Germany (DE), Poland (PL) · Transboundary: Yes · Inscribed 1992 · Criteria: ix, x · In Danger since 2015 · Area: 5000 ha · Coordinates: 52.5, 14.5',
+    'Natural · Europe and North America · Germany (DE), Poland (PL) · Transboundary: Yes · Inscribed 1992 · Criteria: ix, x · In Danger since 2015 · Area: 5000 ha · Coordinates: 52.5, 14.5 · Components: 2',
     '> A synthetic forest shared by two states.',
     '',
     '### Lantern Bridge Quarter (id_no 107)',
-    'Cultural · Europe and North America · Germany (DE) · Transboundary: No · Inscribed 1999 · Criteria: iv · Not in Danger · Area: 3 ha · Coordinates: 50.1, 8.7',
+    'Cultural · Europe and North America · Germany (DE) · Transboundary: No · Inscribed 1999 · Criteria: iv · Not in Danger · Area: 3 ha · Coordinates: 50.1, 8.7 · Components: 1',
     "> Text with a 'quoted' word & more.",
     '> Second line here.',
     '',
     '### Reedhaven Components Test (id_no 108)',
-    'Cultural · Europe and North America · Germany (DE) · Transboundary: No · Inscribed 2003 · Criteria: iv · Not in Danger · Area: 10 ha · Coordinates: 51, 9',
+    'Cultural · Europe and North America · Germany (DE) · Transboundary: No · Inscribed 2003 · Criteria: iv · Not in Danger · Area: 10 ha · Coordinates: 51, 9 · Components: 5',
     '> A synthetic site with awkward component entries.',
   ].join('\n');
   const DE_FIRST_ROW = {
@@ -1910,6 +2070,7 @@ describe('unesco_search_sites — include_description', () => {
     area_hectares: 5000,
     latitude: 52.5,
     longitude: 14.5,
+    components_total: 2,
     description: 'A synthetic forest shared by two states.',
   };
   const OMITTED_NOTE =

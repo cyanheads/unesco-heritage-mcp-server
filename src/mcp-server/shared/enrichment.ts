@@ -9,7 +9,6 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
-import { type ClampedBudget, LIMIT_BUDGET } from '@/mcp-server/shared/inputs.js';
 import { inline } from '@/mcp-server/shared/markdown.js';
 import type { SourceEntry } from '@/services/unesco-datahub/types.js';
 import {
@@ -63,11 +62,7 @@ export const pageEnrichment = {
   totalCount: z.number().describe('Total matches across all pages.'),
   truncated: z.boolean().describe('True when more results remain beyond this page.'),
   shown: z.number().describe('Number of results on this page.'),
-  cap: z
-    .number()
-    .describe(
-      `The page size applied: limit, or the per-call cap of ${LIMIT_BUDGET.cap} when limit was larger.`,
-    ),
+  cap: z.number().describe('The page size applied: the requested limit.'),
   notice: z
     .string()
     .optional()
@@ -128,23 +123,19 @@ export function descriptionLanguageFragment(
 }
 
 /**
- * Composes the page notice: the `limit` clamp fragment first when the request
- * exceeded the page cap, then the tool's fragments, then the continuation
+ * Composes the page notice: the tool's fragments, then the continuation
  * fragment when more results remain. The caller passes `notice` to
  * `ctx.enrich.truncated` as `guidance` when `more`, else to `ctx.enrich.notice`
  * when non-empty.
  */
 export function composePageNotice(args: {
   fragments: readonly string[];
-  limit: ClampedBudget;
   offset: number;
   shown: number;
   total: number;
 }): { more: boolean; notice: string } {
   const more = args.offset + args.shown < args.total;
-  const parts = args.limit.fragment
-    ? [args.limit.fragment, ...args.fragments]
-    : [...args.fragments];
+  const parts = [...args.fragments];
   if (more) {
     parts.push(
       `Showing results ${args.offset + 1}–${args.offset + args.shown} of ${args.total}; pass next_cursor to continue.`,

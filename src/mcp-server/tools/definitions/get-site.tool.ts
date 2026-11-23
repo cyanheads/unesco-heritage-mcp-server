@@ -18,8 +18,6 @@ import {
 import {
   BUDGET_CEILING,
   budgetInput,
-  COMPONENTS_BUDGET,
-  clampBudget,
   descriptionLanguageInput,
   idNoInput,
 } from '@/mcp-server/shared/inputs.js';
@@ -48,7 +46,7 @@ export const getSiteTool = tool('unesco_get_site', {
     max_components: budgetInput(
       0,
       20,
-      `Maximum component parts to list (default 20). One call lists at most ${COMPONENTS_BUDGET.cap}: a larger value, up to ${BUDGET_CEILING}, is served as ${COMPONENTS_BUDGET.cap} and notice says so. 0 omits the list but keeps components_total; the largest site has 758 components.`,
+      `Maximum component parts to list (default 20, up to ${BUDGET_CEILING}). 0 omits the list but keeps components_total; the largest site has 758 components.`,
     ),
     description_language: descriptionLanguageInput(
       SITE_DESCRIPTION_LANGUAGES,
@@ -167,16 +165,12 @@ export const getSiteTool = tool('unesco_get_site', {
       .boolean()
       .describe('True when the list stops at cap with more readable components left.'),
     shown: z.number().describe('Components listed.'),
-    cap: z
-      .number()
-      .describe(
-        `The max_components applied: the request, or the per-call cap of ${COMPONENTS_BUDGET.cap} when it was larger.`,
-      ),
+    cap: z.number().describe('The max_components applied: the requested value.'),
     notice: z
       .string()
       .optional()
       .describe(
-        'That max_components was above the per-call cap, that the description is not in the requested description_language, how to list more components, or why some are missing.',
+        'That the description is not in the requested description_language, how to list more components, or why some are missing.',
       ),
   },
   enrichmentTrailer: {
@@ -211,23 +205,21 @@ export const getSiteTool = tool('unesco_get_site', {
       });
     }
 
-    const components = clampBudget(COMPONENTS_BUDGET, input.max_components);
+    const maxComponents = input.max_components;
     const language = input.description_language;
-    const record = buildSiteRecord(site, components.applied, language);
+    const record = buildSiteRecord(site, maxComponents, language);
     const parsed = site.components.length;
     const shown = record.components.length;
-    ctx.enrich({ truncated: false, shown, cap: components.applied });
+    ctx.enrich({ truncated: false, shown, cap: maxComponents });
 
-    const truncated = parsed > components.applied;
-    const fragments = components.fragment ? [components.fragment] : [];
+    const truncated = parsed > maxComponents;
+    const fragments: string[] = [];
     const fallback =
       language && descriptionLanguageFragment('site', language, record.description_language);
     if (fallback) fragments.push(fallback);
     if (truncated) {
       fragments.push(
-        components.applied < COMPONENTS_BUDGET.cap
-          ? `Showing ${shown} of ${countOf(parsed, 'component')}; call unesco_get_site with a higher max_components (up to ${COMPONENTS_BUDGET.cap}) to list more.`
-          : `Showing ${shown} of ${countOf(parsed, 'component')}, the most one call lists.`,
+        `Showing ${shown} of ${countOf(parsed, 'component')}; call unesco_get_site with a higher max_components (up to ${BUDGET_CEILING.toLocaleString('en-US')}) to list more.`,
       );
     }
     if (site.components_unparsed > 0) {
@@ -237,7 +229,7 @@ export const getSiteTool = tool('unesco_get_site', {
     }
     const notice = fragments.join(' ');
     if (truncated) {
-      ctx.enrich.truncated({ shown, cap: components.applied, guidance: notice });
+      ctx.enrich.truncated({ shown, cap: maxComponents, guidance: notice });
     } else if (notice) {
       ctx.enrich.notice(notice);
     }
@@ -294,6 +286,8 @@ export const getSiteTool = tool('unesco_get_site', {
         ),
         '',
       );
+    } else {
+      lines.push('**Components:** None listed', '');
     }
     if (r.image) {
       lines.push(

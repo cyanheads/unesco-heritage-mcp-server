@@ -66,6 +66,16 @@ describe('error contract severity', () => {
     const reasons = (tool.errors as readonly ContractEntry[]).map((e) => e.reason);
     expect(reasons).toContain('invalid_cursor');
   });
+
+  it('declares review_filter_conflict on unesco_search_biosphere_reserves as a notice-level ValidationError', () => {
+    expect(searchBiosphereReservesTool.errors as readonly ContractEntry[]).toContainEqual(
+      expect.objectContaining({
+        reason: 'review_filter_conflict',
+        code: JsonRpcErrorCode.ValidationError,
+        severity: 'notice',
+      }),
+    );
+  });
 });
 
 describe('invalid_cursor recovery on the wire', () => {

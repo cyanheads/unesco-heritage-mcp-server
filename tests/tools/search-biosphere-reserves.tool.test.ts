@@ -1,11 +1,12 @@
 /**
  * @fileoverview Tests for unesco_search_biosphere_reserves: blank-as-unset
  * inputs, keyword tiers, country/region/network/transboundary/SIDS/year
- * filters, distance search, sorting, pagination and cursors, facets, zero-hit
- * notices, the declared error contracts, the required-enrichment contract on
- * the zero-result and under-cap pages, upstream failure classes, format()
- * parity with structuredContent, and CR/LF in upstream text staying out of
- * inline slots.
+ * filters, the periodic-review row field and filters, distance search,
+ * sorting, pagination and cursors (limit served as requested up to the
+ * ceiling), facets, zero-hit notices, the declared error contracts, the
+ * required-enrichment contract on the zero-result and under-cap pages,
+ * upstream failure classes, format() parity with structuredContent, and CR/LF
+ * in upstream text staying out of inline slots.
  * @module tests/tools/search-biosphere-reserves.tool.test
  */
 
@@ -15,7 +16,7 @@ import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testi
 import { requestContextService } from '@cyanheads/mcp-ts-core/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchBiosphereReservesTool as tool } from '@/mcp-server/tools/definitions/search-biosphere-reserves.tool.js';
-import { makeCursor, readCursor } from '@/services/unesco-datahub/search.js';
+import { fingerprint, makeCursor, readCursor } from '@/services/unesco-datahub/search.js';
 import { getUnescoDataHubService } from '@/services/unesco-datahub/unesco-datahub-service.js';
 import { declaredRecovery } from '../fixtures/contract.js';
 import {
@@ -27,7 +28,7 @@ import {
 } from '../fixtures/failures.js';
 import { httpFailure, transientFailure } from '../fixtures/hub.js';
 import { manyMabRows } from '../fixtures/paging.js';
-import { MAB_ROWS, mabRow } from '../fixtures/rows.js';
+import { MAB_REVIEW_ROWS, MAB_ROWS, mabRow } from '../fixtures/rows.js';
 import {
   allText,
   disposeServiceAfterEach,
@@ -45,6 +46,7 @@ interface Reserve {
   designation_year: number;
   distance_km?: number;
   introduction: string;
+  last_periodic_review_year?: number;
   latitude: number;
   longitude: number;
   mab_id: string;
@@ -87,6 +89,10 @@ const search = async (input: Record<string, unknown> = {}) => {
 
 const ids = (out: SearchOutput) => out.reserves.map((r) => r.mab_id);
 
+/** More pages than any walk in this file takes; a walk still holding a cursor past it never ends. */
+const MAX_WALK_PAGES = 50;
+
+/** Every page of a walk, following next_cursor until it is absent; fails past MAX_WALK_PAGES. */
 async function walk(input: Record<string, unknown>) {
   const pages: SearchOutput[] = [];
   let cursor: string | undefined;
@@ -94,7 +100,11 @@ async function walk(input: Record<string, unknown>) {
     const { out } = await search({ ...input, ...(cursor ? { cursor } : {}) });
     pages.push(out);
     cursor = out.next_cursor;
-  } while (cursor);
+  } while (cursor && pages.length < MAX_WALK_PAGES);
+  expect(
+    cursor,
+    `next_cursor still set after ${MAX_WALK_PAGES} pages of ${JSON.stringify(input)}`,
+  ).toBeUndefined();
   return pages;
 }
 
@@ -123,6 +133,7 @@ describe('unesco_search_biosphere_reserves — basics', () => {
       regions: ['Europe and North America'],
       regional_network: EURO_MAB,
       designation_year: 1998,
+      last_periodic_review_year: 2025,
       transboundary: false,
       sids: false,
       area_total_hectares: 5000,
@@ -134,6 +145,7 @@ describe('unesco_search_biosphere_reserves — basics', () => {
     });
     const peru = out.reserves.find((r) => r.mab_id === 'PEÑandu2001') as Reserve;
     expect(peru).not.toHaveProperty('regional_network');
+    expect(peru).not.toHaveProperty('last_periodic_review_year');
     expect(peru).toMatchObject({ latitude: -10, longitude: -75, country_code: 'PE' });
   });
 
@@ -147,6 +159,9 @@ describe('unesco_search_biosphere_reserves — basics', () => {
       sids: '',
       designated_from: '',
       designated_to: '',
+      reviewed_from: '',
+      reviewed_to: ' ',
+      reviewed: '',
       near: '',
       sort: '',
       limit: '',
@@ -168,6 +183,11 @@ describe('unesco_search_biosphere_reserves — basics', () => {
     ['a non-boolean sids', { sids: 1 }],
     ['a year below 1900', { designated_from: 1899 }],
     ['a year above 2100', { designated_to: 2101 }],
+    ['a review year below 1900', { reviewed_from: 1899 }],
+    ['a review year above 2100', { reviewed_to: 2101 }],
+    ['a fractional review year', { reviewed_to: 2015.5 }],
+    ['the string "false" for reviewed', { reviewed: 'false' }],
+    ['a number for reviewed', { reviewed: 0 }],
     ['a query over 200 characters', { query: 'a'.repeat(201) }],
     ['a query of punctuation only', { query: '!!!' }],
     ['a cursor over 1024 characters', { cursor: 'a'.repeat(1025) }],
@@ -410,11 +430,322 @@ describe('unesco_search_biosphere_reserves — filters', () => {
     });
   });
 
+  it.each([
+    [
+      'designated',
+      { designated_from: 2001, designated_to: 1998 },
+      'designated_from (2001) is later than designated_to (1998).',
+    ],
+    [
+      'reviewed',
+      { reviewed_from: 2020, reviewed_to: 2010 },
+      'reviewed_from (2020) is later than reviewed_to (2010).',
+    ],
+  ])(
+    'names the inverted %s pair in the message and both pairs in the recovery, on both surfaces',
+    async (_label, input, message) => {
+      const hub = useHub();
+      const result = await runToolContract(tool, input as never);
+      const error = errorOf(result);
+      const recovery = declaredRecovery(tool.errors, 'invalid_year_range');
+      expect(error.data?.reason).toBe('invalid_year_range');
+      expect(error.message).toBe(message);
+      for (const field of ['designated_from', 'designated_to', 'reviewed_from', 'reviewed_to']) {
+        expect(recovery).toContain(field);
+      }
+      expect(error.data?.recovery?.hint).toBe(recovery);
+      expect(allText(result)).toContain(message);
+      expect(allText(result)).toContain(`Recovery: ${recovery}`);
+      expect(hub.calls).toHaveLength(0);
+    },
+  );
+
   it('combines filters with AND', async () => {
     expect(
       ids((await search({ region: 'EUR', transboundary: true, designated_from: 1990 })).out),
     ).toEqual(['DEBrin1993', 'PLBrin1993']);
     expect((await search({ region: 'LAC', transboundary: true })).out.totalCount).toBe(0);
+  });
+});
+
+describe('unesco_search_biosphere_reserves — periodic review', () => {
+  /**
+   * Reserves built here, in name order, so the cases read `periodic_review`
+   * shapes the loader parses the same way with or without follow-up-report
+   * handling: an out-of-order pair (latest listed first), three reviews, a
+   * semicolon pair, one review, and none.
+   */
+  const REVIEW_ROWS = [
+    mabRow({
+      mab_id: 'ZZOrder2002',
+      title_en: 'Aa Order Reserve',
+      date: '2002-01-01',
+      periodic_review: '2017, 2016',
+    }),
+    mabRow({
+      mab_id: 'ZZThrice1990',
+      title_en: 'Bb Thrice Reserve',
+      date: '1990-01-01',
+      periodic_review: '2003, 2013, 2023',
+    }),
+    mabRow({
+      mab_id: 'ZZPair1977',
+      title_en: 'Cc Pair Reserve',
+      date: '1977-01-01',
+      periodic_review: '1998; 2020',
+    }),
+    mabRow({
+      mab_id: 'ZZOnce2000',
+      title_en: 'Dd Once Reserve',
+      date: '2000-01-01',
+      periodic_review: '2015',
+    }),
+    mabRow({ mab_id: 'ZZNever1980', title_en: 'Ee Never Reserve', date: '1980-01-01' }),
+    mabRow({ mab_id: 'ZZNever2019', title_en: 'Ff Never Reserve', date: '2019-01-01' }),
+  ];
+  const REVIEWED = ['ZZOrder2002', 'ZZThrice1990', 'ZZPair1977', 'ZZOnce2000'];
+  const UNREVIEWED = ['ZZNever1980', 'ZZNever2019'];
+
+  /** The facts line under a reserve's `### {name} ({mab_id})` heading. */
+  const factsOf = (text: string, mabId: string) => {
+    const lines = text.split('\n');
+    const heading = lines.findIndex((l) => l.startsWith('### ') && l.endsWith(`(${mabId})`));
+    expect(heading, mabId).toBeGreaterThanOrEqual(0);
+    return lines[heading + 1] ?? '';
+  };
+
+  beforeEach(() => {
+    useHub({ rows: { mab001: REVIEW_ROWS } });
+  });
+
+  it('carries the highest review year, not the last listed, and leaves it out when none is recorded', async () => {
+    const { out, text } = await search();
+    const byId = new Map(out.reserves.map((r) => [r.mab_id, r]));
+    expect(REVIEWED.map((id) => byId.get(id)?.last_periodic_review_year)).toEqual([
+      2017, 2023, 2020, 2015,
+    ]);
+    for (const id of UNREVIEWED) {
+      expect(byId.get(id)).not.toHaveProperty('last_periodic_review_year');
+    }
+    expect(factsOf(text, 'ZZOrder2002')).toContain(
+      'Designated 2002 · Last periodic review 2017 · Transboundary: No',
+    );
+    expect(factsOf(text, 'ZZThrice1990')).toContain('Last periodic review 2023 ·');
+    expect(factsOf(text, 'ZZNever1980')).toContain(
+      'Designated 1980 · No periodic review recorded · Transboundary: No',
+    );
+    expect(text).not.toContain('Last periodic review 2016');
+  });
+
+  it('advertises last_periodic_review_year as an optional number', () => {
+    const json = z.toJSONSchema(tool.output, { io: 'output' }) as unknown as {
+      properties: {
+        reserves: { items: { properties: Record<string, { type?: string }>; required: string[] } };
+      };
+    };
+    const row = json.properties.reserves.items;
+    expect(row.properties.last_periodic_review_year?.type).toBe('number');
+    expect(row.required).not.toContain('last_periodic_review_year');
+  });
+
+  it('filters by whether a review is recorded, in both directions', async () => {
+    const yes = await search({ reviewed: true });
+    expect(ids(yes.out)).toEqual(REVIEWED);
+    expect(yes.out.applied_filters).toEqual({
+      reviewed: true,
+      sort: 'name',
+      limit: 20,
+      include_description: true,
+    });
+    expect(yes.text.split('\n')).toContain('- reviewed: true');
+    const no = await search({ reviewed: false });
+    expect(ids(no.out)).toEqual(UNREVIEWED);
+    expect(no.out.applied_filters.reviewed).toBe(false);
+    expect(no.text.split('\n')).toContain('- reviewed: false');
+    expect(no.text).not.toContain('Last periodic review');
+  });
+
+  it.each([
+    ['reviewed_from 2020, inclusive', { reviewed_from: 2020 }, ['ZZThrice1990', 'ZZPair1977']],
+    ['reviewed_to 2015, inclusive', { reviewed_to: 2015 }, ['ZZOnce2000']],
+    ['reviewed_to 2016, below the latest of 2017, 2016', { reviewed_to: 2016 }, ['ZZOnce2000']],
+    ['reviewed_to 2017', { reviewed_to: 2017 }, ['ZZOrder2002', 'ZZOnce2000']],
+    ['a one-year range', { reviewed_from: 2017, reviewed_to: 2017 }, ['ZZOrder2002']],
+    ['the widest bounds', { reviewed_from: 1900, reviewed_to: 2100 }, REVIEWED],
+    [
+      'reviewed true with a bound',
+      { reviewed: true, reviewed_from: 2020 },
+      ['ZZThrice1990', 'ZZPair1977'],
+    ],
+  ])('bounds the latest review year only: %s', async (_label, input, expected) => {
+    const { out } = await search(input);
+    expect(ids(out)).toEqual(expected);
+    for (const id of UNREVIEWED) expect(ids(out)).not.toContain(id);
+  });
+
+  it('echoes set bounds in applied_filters and the trailer, and adds no key when unset', async () => {
+    const { out, text } = await search({ reviewed_from: 2000, reviewed_to: 2030, reviewed: true });
+    expect(out.applied_filters).toEqual({
+      reviewed_from: 2000,
+      reviewed_to: 2030,
+      reviewed: true,
+      sort: 'name',
+      limit: 20,
+      include_description: true,
+    });
+    const lines = text.split('\n');
+    expect(lines).toContain('- reviewed_from: 2000');
+    expect(lines).toContain('- reviewed_to: 2030');
+    expect(lines).toContain('- reviewed: true');
+    const plain = await search({ designated_to: 2000 });
+    expect(Object.keys(plain.out.applied_filters).filter((k) => k.startsWith('reviewed'))).toEqual(
+      [],
+    );
+    expect(plain.text).not.toContain('- reviewed');
+  });
+
+  it.each([
+    ['reviewed_to', { reviewed: false, reviewed_to: 2015 }],
+    ['reviewed_from', { reviewed: false, reviewed_from: 2000 }],
+    ['both bounds', { reviewed: false, reviewed_from: 2000, reviewed_to: 2015 }],
+    ['reversed bounds', { reviewed: false, reviewed_from: 2020, reviewed_to: 2010 }],
+  ])(
+    'rejects reviewed false with %s as review_filter_conflict before loading',
+    async (_label, input) => {
+      const hub = useHub({ rows: { mab001: REVIEW_ROWS } });
+      const result = await runToolContract(tool, input as never);
+      const error = errorOf(result);
+      const recovery = declaredRecovery(tool.errors, 'review_filter_conflict');
+      expect(error.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(error.data).toMatchObject({
+        reason: 'review_filter_conflict',
+        recovery: { hint: recovery },
+      });
+      expect(error.message).toBe(
+        'reviewed false keeps only reserves with no recorded periodic review, so reviewed_from and reviewed_to cannot apply.',
+      );
+      for (const field of ['reviewed', 'reviewed_from', 'reviewed_to']) {
+        expect(recovery).toContain(field);
+      }
+      const text = allText(result);
+      expect(text).toContain(`Recovery: ${recovery}`);
+      expect(text).toContain('(reason review_filter_conflict');
+      expect(hub.calls).toHaveLength(0);
+    },
+  );
+
+  it('gives a review bound that alone matches nothing no fragment of its own', async () => {
+    const { result, out } = await search({ reviewed_from: 2024 });
+    expect(result.isError).not.toBe(true);
+    expect(out).toMatchObject({ totalCount: 0, shown: 0, truncated: false, cap: 20 });
+    expect(out.reserves).toEqual([]);
+    expect(out.notice).toBeUndefined();
+  });
+
+  it.each([
+    [
+      'reviewed_from',
+      { region: 'EUR', reviewed_from: 2024 },
+      'No reserve matched all 2 filters. Removing reviewed_from alone would match 6 reserves.',
+    ],
+    [
+      'reviewed_to',
+      { region: 'EUR', reviewed_to: 1999 },
+      'No reserve matched all 2 filters. Removing reviewed_to alone would match 6 reserves.',
+    ],
+    [
+      // Designated 1985–2005: ZZOrder2002, ZZThrice1990, ZZOnce2000, all reviewed.
+      'reviewed',
+      { designated_from: 1985, designated_to: 2005, reviewed: false },
+      'No reserve matched all 3 filters. Removing reviewed alone would match 3 reserves.',
+    ],
+  ])(
+    'names %s as the filter whose removal recovers the most reserves, on both surfaces',
+    async (_label, input, notice) => {
+      const { out, text } = await search(input);
+      expect(out.notice).toBe(notice);
+      expect(text).toContain(notice);
+    },
+  );
+
+  it('keeps a follow-up report year out of the latest review year and the review bounds', async () => {
+    useHub({ rows: { mab001: MAB_REVIEW_ROWS } });
+    const { out, text } = await search();
+    expect(out.reserves.map((r) => [r.mab_id, r.last_periodic_review_year])).toEqual([
+      ['IDFoll1981', 2013],
+      ['FRFoll1979', 2014],
+      ['FROrder2002', 2017],
+    ]);
+    expect(factsOf(text, 'FRFoll1979')).toContain(
+      'Designated 1979 · Last periodic review 2014 · Transboundary: No',
+    );
+    expect(ids((await search({ reviewed_to: 2015 })).out)).toEqual(['IDFoll1981', 'FRFoll1979']);
+  });
+
+  describe('with cursors', () => {
+    /** 45 paging rows, the even-numbered ones reviewed in 2000–2019. */
+    const PAGED_ROWS = manyMabRows(45).map((row, i) => ({
+      ...row,
+      periodic_review: i % 2 === 0 ? String(2000 + (i % 20)) : null,
+    }));
+    const rc = () => requestContextService.createRequestContext({ operation: 'test' });
+
+    beforeEach(() => {
+      useHub({ rows: { mab001: PAGED_ROWS } });
+    });
+
+    it('pages a review filter through the whole match and past its end', async () => {
+      const pages = await walk({ reviewed: true, limit: 10 });
+      expect(pages.map((p) => p.reserves.length)).toEqual([10, 10, 3]);
+      const rows = pages.flatMap((p) => p.reserves);
+      expect(new Set(rows.map((r) => r.mab_id)).size).toBe(23);
+      expect(rows.every((r) => r.last_periodic_review_year !== undefined)).toBe(true);
+      expect(pages[0]).toMatchObject({ totalCount: 23, truncated: true, cap: 10 });
+      const state = readCursor(pages[0]?.next_cursor as string, rc());
+      const past = await search({
+        reviewed: true,
+        limit: 10,
+        cursor: makeCursor({ ...state, offset: 23, limit: 10 }),
+      });
+      expect(past.out.reserves).toEqual([]);
+      expect(past.out.notice).toBe(
+        'The cursor is past the last of 23 results. Call unesco_search_biosphere_reserves without cursor to start over.',
+      );
+    });
+
+    it.each([
+      ['a changed bound', { reviewed_to: 2031 }],
+      ['an added reviewed', { reviewed_to: 2030, reviewed: true }],
+      ['a dropped bound', {}],
+    ])('rejects a review-filtered cursor used with %s as cursor_mismatch', async (_label, next) => {
+      const first = (await search({ reviewed_to: 2030, limit: 10 })).out;
+      expect(first.next_cursor).toBeDefined();
+      const error = errorOf(
+        await runToolContract(tool, { limit: 10, ...next, cursor: first.next_cursor } as never),
+      );
+      expect(error.data?.reason).toBe('cursor_mismatch');
+      const same = (await search({ reviewed_to: 2030, limit: 10, cursor: first.next_cursor })).out;
+      expect(same.notice).toBe('Showing results 11–20 of 23; pass next_cursor to continue.');
+    });
+
+    it.each([
+      ['no filter', {}, { sort: 'name' }],
+      [
+        'region and a designation bound',
+        { region: 'EUR', designated_to: 1995 },
+        { region: 'Europe and North America', designated_to: 1995, sort: 'name' },
+      ],
+    ])(
+      'continues a cursor whose fingerprint predates the review filters, with %s',
+      async (_label, filters, fingerprinted) => {
+        const whole = (await walk({ ...filters, limit: 5 })).flatMap(ids);
+        const first = (await search({ ...filters, limit: 5 })).out;
+        const { asOf } = readCursor(first.next_cursor as string, rc());
+        const legacy = makeCursor({ offset: 5, limit: 5, fp: fingerprint(fingerprinted), asOf });
+        const { out } = await search({ ...filters, limit: 5, cursor: legacy });
+        expect(ids(out)).toEqual(whole.slice(5, 10));
+      },
+    );
   });
 });
 
@@ -715,7 +1046,7 @@ describe('unesco_search_biosphere_reserves — pagination and cursors', () => {
     expect(last.next_cursor).toBeUndefined();
   });
 
-  it('applies the default page size of 20 and caps at 50', async () => {
+  it('applies the default page size of 20 and serves limit 50 whole', async () => {
     expect((await search()).out).toMatchObject({ shown: 20, cap: 20, truncated: true });
     const wide = (await search({ limit: 50 })).out;
     expect(wide).toMatchObject({ shown: 45, cap: 50, truncated: false });
@@ -758,6 +1089,9 @@ describe('unesco_search_biosphere_reserves — pagination and cursors', () => {
     ['an added transboundary filter', { transboundary: false }],
     ['an added sids filter', { sids: false }],
     ['an added near', { near: { latitude: 48, longitude: 2, radius_km: 5000 } }],
+    ['an added reviewed filter', { reviewed: false }],
+    ['an added reviewed_from bound', { reviewed_from: 1995 }],
+    ['an added reviewed_to bound', { reviewed_to: 2030 }],
   ])('rejects a cursor used with %s as cursor_mismatch', async (_label, change) => {
     const first = (await search({ limit: 10 })).out;
     const result = await runToolContract(tool, {
@@ -838,38 +1172,76 @@ describe('unesco_search_biosphere_reserves — pagination and cursors', () => {
   });
 });
 
-describe('unesco_search_biosphere_reserves — limit above the per-call cap', () => {
+describe('unesco_search_biosphere_reserves — limit above 50', () => {
   beforeEach(() => {
-    useHub({ rows: { mab001: manyMabRows(120) } });
+    useHub({ rows: { mab001: manyMabRows(200) } });
   });
 
-  it.each([51, 10_000])(
-    'serves limit %i as the limit-50 page, the clamp leading notice',
-    async (limit) => {
-      const atCap = await search({ limit: 50 });
-      expect(atCap.out.notice).toBe('Showing results 1–50 of 120; pass next_cursor to continue.');
-      const { out, text } = await search({ limit });
-      expect(ids(out)).toEqual(ids(atCap.out));
-      expect(out).toMatchObject({ totalCount: 120, shown: 50, cap: 50, truncated: true });
-      expect(out.next_cursor).toBe(atCap.out.next_cursor);
-      expect(out.applied_filters.limit).toBe(50);
-      expect(out.notice).toBe(
-        `limit ${limit} is above the per-call cap of 50, so this page holds at most 50 results. Showing results 1–50 of 120; pass next_cursor to continue.`,
+  /** The whole match in order, from a walk at limit 10, so no large page is assumed. */
+  const wholeMatch = async () => (await walk({ limit: 10 })).flatMap(ids);
+
+  it('serves limit 100 as 100 rows, with cap and applied_filters.limit at the request', async () => {
+    const whole = await wholeMatch();
+    const { out, text } = await search({ limit: 100 });
+    expect(ids(out)).toEqual(whole.slice(0, 100));
+    expect(out).toMatchObject({ totalCount: 200, shown: 100, cap: 100, truncated: true });
+    expect(out.applied_filters.limit).toBe(100);
+    expect(out.notice).toBe('Showing results 1–100 of 200; pass next_cursor to continue.');
+    expect(text).toContain('- limit: 100');
+    expect(text).toContain('**cap:** 100');
+    expect(text).not.toContain('per-call cap');
+  });
+
+  it.each([200, 10_000])('serves the whole match on one page at limit %i', async (limit) => {
+    const whole = await wholeMatch();
+    const { out, text } = await search({ limit });
+    expect(ids(out)).toEqual(whole);
+    expect(out).toMatchObject({ totalCount: 200, shown: 200, cap: limit, truncated: false });
+    expect(out.applied_filters.limit).toBe(limit);
+    expect(out.next_cursor).toBeUndefined();
+    expect(out.notice).toBeUndefined();
+    expect(text).not.toContain('per-call cap');
+    expect(text).not.toContain('Next cursor');
+  });
+
+  it('continues a limit-100 cursor under limit 60 from its offset: results 101–160, then 161–200', async () => {
+    const whole = await wholeMatch();
+    const first = (await search({ limit: 100 })).out;
+    const second = (await search({ limit: 60, cursor: first.next_cursor })).out;
+    expect(ids(second)).toEqual(whole.slice(100, 160));
+    expect(second).toMatchObject({ shown: 60, cap: 60, truncated: true });
+    expect(second.notice).toBe('Showing results 101–160 of 200; pass next_cursor to continue.');
+    const third = (await search({ limit: 60, cursor: second.next_cursor })).out;
+    expect(ids(third)).toEqual(whole.slice(160));
+    expect(third).toMatchObject({ shown: 40, cap: 60, truncated: false });
+    expect(third.next_cursor).toBeUndefined();
+  });
+
+  it('continues a cursor minted at limit 50 and offset 50 under limit 60: results 51–110', async () => {
+    const whole = await wholeMatch();
+    const state = readCursor(
+      (await search({ limit: 50 })).out.next_cursor as string,
+      requestContextService.createRequestContext({ operation: 'test' }),
+    );
+    expect(state.offset).toBe(50);
+    const { out } = await search({ limit: 60, cursor: makeCursor({ ...state, limit: 50 }) });
+    expect(ids(out)).toEqual(whole.slice(50, 110));
+    expect(out.notice).toBe('Showing results 51–110 of 200; pass next_cursor to continue.');
+  });
+
+  it.each([
+    ['a different region', { region: 'EUR' }],
+    ['an added review bound', { reviewed_to: 2030 }],
+  ])(
+    'still rejects a large-limit cursor used with %s as cursor_mismatch',
+    async (_label, change) => {
+      const first = (await search({ limit: 100 })).out;
+      const error = errorOf(
+        await runToolContract(tool, { limit: 150, ...change, cursor: first.next_cursor } as never),
       );
-      expect(text).toContain(out.notice as string);
+      expect(error.data?.reason).toBe('cursor_mismatch');
     },
   );
-
-  it('continues a clamped page with results 51–100', async () => {
-    const first = (await search({ limit: 51 })).out;
-    const second = (await search({ limit: 51, cursor: first.next_cursor })).out;
-    const atCap = (await search({ limit: 50 })).out;
-    const atCapSecond = (await search({ limit: 50, cursor: atCap.next_cursor })).out;
-    expect(ids(second)).toEqual(ids(atCapSecond));
-    expect(second.notice).toBe(
-      'limit 51 is above the per-call cap of 50, so this page holds at most 50 results. Showing results 51–100 of 120; pass next_cursor to continue.',
-    );
-  });
 
   it('rejects limit 10001, naming the 10000 ceiling', async () => {
     const error = errorOf(await runToolContract(tool, { limit: 10_001 } as never));
@@ -1031,19 +1403,19 @@ describe('unesco_search_biosphere_reserves — include_description', () => {
     '**4 biosphere reserves on this page**',
     ...reserveBlock(
       'Alderfen Marsh Reserve (FRAlder1998)',
-      `France (FR) · Europe and North America · ${EURO_MAB} · Designated 1998 · Transboundary: No · SIDS: No · Area: 5000 ha (marine 0 ha) · Population: 1000 · Coordinates: 48.5, 2.5`,
+      `France (FR) · Europe and North America · ${EURO_MAB} · Designated 1998 · Last periodic review 2025 · Transboundary: No · SIDS: No · Area: 5000 ha (marine 0 ha) · Population: 1000 · Coordinates: 48.5, 2.5`,
     ),
     ...reserveBlock(
       'Brindle Cross-border Reserve (DEBrin1993)',
-      `Germany (DE) · Europe and North America · ${EURO_MAB} · Designated 1993 · Transboundary: Yes · SIDS: No · Area: 5000 ha (marine 0 ha) · Population: 1000 · Coordinates: 52.5, 14.4`,
+      `Germany (DE) · Europe and North America · ${EURO_MAB} · Designated 1993 · No periodic review recorded · Transboundary: Yes · SIDS: No · Area: 5000 ha (marine 0 ha) · Population: 1000 · Coordinates: 52.5, 14.4`,
     ),
     ...reserveBlock(
       'Brindle Cross-border Reserve (PLBrin1993)',
-      `Poland (PL) · Europe and North America · ${EURO_MAB} · Designated 1993 · Transboundary: Yes · SIDS: No · Area: 5000 ha (marine 0 ha) · Population: 1000 · Coordinates: 52.5, 14.6`,
+      `Poland (PL) · Europe and North America · ${EURO_MAB} · Designated 1993 · No periodic review recorded · Transboundary: Yes · SIDS: No · Area: 5000 ha (marine 0 ha) · Population: 1000 · Coordinates: 52.5, 14.6`,
     ),
     ...reserveBlock(
       'Ñandu Highland Reserve (PEÑandu2001)',
-      'Peru (PE) · Latin America and the Caribbean · No regional network · Designated 2001 · Transboundary: No · SIDS: No · Area: 5000 ha (marine 0 ha) · Population: 1000 · Coordinates: -10, -75',
+      'Peru (PE) · Latin America and the Caribbean · No regional network · Designated 2001 · No periodic review recorded · Transboundary: No · SIDS: No · Area: 5000 ha (marine 0 ha) · Population: 1000 · Coordinates: -10, -75',
     ),
   ].join('\n');
   const withoutQuotes = (block: string) =>
@@ -1052,7 +1424,7 @@ describe('unesco_search_biosphere_reserves — include_description', () => {
       .filter((l) => !(l === '>' || l.startsWith('> ')))
       .join('\n');
 
-  it('renders the default page exactly as before', async () => {
+  it('renders the default page with every fact line', async () => {
     const { result, out } = await search();
     expect(textBlocks(result)[0]).toBe(DEFAULT_BLOCK);
     expect(out.reserves.map((r) => r.introduction)).toEqual(
@@ -1264,6 +1636,11 @@ describe('unesco_search_biosphere_reserves — format() parity and text safety',
       expect(body).toContain(r.regions.join(', '));
       expect(body).toContain(r.regional_network ?? 'No regional network');
       expect(body).toContain(`Designated ${r.designation_year}`);
+      expect(body).toContain(
+        r.last_periodic_review_year !== undefined
+          ? `Last periodic review ${r.last_periodic_review_year}`
+          : 'No periodic review recorded',
+      );
       expect(body).toContain(`Transboundary: ${r.transboundary ? 'Yes' : 'No'}`);
       expect(body).toContain(`SIDS: ${r.sids ? 'Yes' : 'No'}`);
       expect(body).toContain(

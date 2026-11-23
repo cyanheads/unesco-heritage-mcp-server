@@ -1,7 +1,8 @@
 /**
  * @fileoverview unesco_search_biosphere_reserves — searches the World Network
  * of Biosphere Reserves (UNESCO Man and the Biosphere Programme) by keyword,
- * country, region, MAB regional network, designation years, transboundary or
+ * country, region, MAB regional network, designation years, periodic review
+ * (the latest review's year, or whether one is recorded), transboundary or
  * SIDS status, or distance from a point, with facet counts over the whole
  * match and cursor paging.
  * @module mcp-server/tools/definitions/search-biosphere-reserves.tool
@@ -20,12 +21,10 @@ import {
 import {
   blankAsUnset,
   booleanInput,
-  clampBudget,
   countryInput,
   cursorInput,
   foldToEnum,
   includeDescriptionInput,
-  LIMIT_BUDGET,
   limitInput,
   MAX_QUERY_WORDS,
   nearInput,
@@ -94,6 +93,12 @@ const ReserveRow = z
       .optional()
       .describe('MAB regional network, when the reserve belongs to one.'),
     designation_year: z.number().describe('Year of designation.'),
+    last_periodic_review_year: z
+      .number()
+      .optional()
+      .describe(
+        'Year of the latest recorded periodic review: the highest of the review years, which UNESCO does not always list in order. Absent when none is recorded; unesco_get_biosphere_reserve lists every review year.',
+      ),
     transboundary: z
       .boolean()
       .describe('True for a transboundary reserve; each participating country has its own mab_id.'),
@@ -185,6 +190,9 @@ const AppliedFiltersSchema = z
     sids: z.boolean().optional().describe('Small Island Developing State filter.'),
     designated_from: z.number().optional().describe('Earliest designation year.'),
     designated_to: z.number().optional().describe('Latest designation year.'),
+    reviewed_from: z.number().optional().describe('Earliest year of the latest periodic review.'),
+    reviewed_to: z.number().optional().describe('Latest year of the latest periodic review.'),
+    reviewed: z.boolean().optional().describe('Recorded periodic review filter.'),
     near: z
       .object({
         latitude: z.number().describe('Latitude.'),
@@ -194,9 +202,7 @@ const AppliedFiltersSchema = z
       .optional()
       .describe('Distance filter.'),
     sort: z.enum(SORTS).describe('The sort applied (resolved default when none was given).'),
-    limit: z
-      .number()
-      .describe(`Page size applied: limit, or ${LIMIT_BUDGET.cap} when limit was larger.`),
+    limit: z.number().describe('Page size applied: the requested limit.'),
     include_description: z.boolean().describe('Whether rows carry their introduction.'),
   })
   .describe('The filters and sort as the server applied them.');
@@ -205,7 +211,7 @@ type AppliedFilters = z.infer<typeof AppliedFiltersSchema>;
 export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserves', {
   title: 'Search biosphere reserves',
   description:
-    "Search the World Network of Biosphere Reserves (UNESCO Man and the Biosphere Programme) by keyword, country, region, MAB regional network, designation year range, transboundary or Small Island Developing States status, or distance from a point. Every keyword must appear at the start of a word in the reserve's name, introduction, or ecological or socio-economic description; there is no biome or ecosystem field, so an ecosystem search is a keyword search such as mangrove or alpine. A country is an ISO 3166-1 alpha-2 or alpha-3 code. A transboundary reserve appears once per participating country, each with its own mab_id. Results page with next_cursor and carry facet counts over the whole match.",
+    "Search the World Network of Biosphere Reserves (UNESCO Man and the Biosphere Programme) by keyword, country, region, MAB regional network, designation year range, periodic review (a year range for the latest review, or whether any review is recorded), transboundary or Small Island Developing States status, or distance from a point. Every keyword must appear at the start of a word in the reserve's name, introduction, or ecological or socio-economic description; there is no biome or ecosystem field, so an ecosystem search is a keyword search such as mangrove or alpine. A country is an ISO 3166-1 alpha-2 or alpha-3 code. A transboundary reserve appears once per participating country, each with its own mab_id. Each row carries its latest periodic review year when one is recorded. Results page with next_cursor and carry facet counts over the whole match.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     query: queryInput(
@@ -231,6 +237,15 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
     ),
     designated_from: yearInput('Earliest designation year, inclusive.'),
     designated_to: yearInput('Latest designation year, inclusive.'),
+    reviewed_from: yearInput(
+      "Earliest year of a reserve's latest periodic review, inclusive. A reserve with no recorded review never matches.",
+    ),
+    reviewed_to: yearInput(
+      "Latest year of a reserve's latest periodic review, inclusive: reviewed_to 2015 finds reserves whose most recent review was in or before 2015. A reserve with no recorded review never matches; use reviewed false for those.",
+    ),
+    reviewed: booleanInput(
+      'true: only reserves with a recorded periodic review. false: only reserves with none (pair with designated_to to find reserves never reviewed since an early designation); false cannot be combined with reviewed_from or reviewed_to.',
+    ),
     near: nearInput('Only reserves within radius_km of this point. Every reserve has coordinates.'),
     sort: blankAsUnset(z.enum(SORTS).optional()).describe(
       'Result order. Default: relevance when query is set, else distance when near is set, else name. relevance needs query; distance needs near. area_largest orders by total recorded area.',
@@ -272,10 +287,18 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
     {
       reason: 'invalid_year_range',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'designated_from is later than designated_to',
+      when: 'designated_from is later than designated_to, or reviewed_from is later than reviewed_to',
       severity: 'notice',
       recovery:
-        'Set designated_from to a year at or before designated_to, then call unesco_search_biosphere_reserves again.',
+        'Put the reversed range in order (designated_from at or before designated_to, reviewed_from at or before reviewed_to), then call unesco_search_biosphere_reserves again.',
+    },
+    {
+      reason: 'review_filter_conflict',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'reviewed is false while reviewed_from or reviewed_to is set: a reserve with no recorded periodic review has no review year to bound',
+      severity: 'notice',
+      recovery:
+        'Drop reviewed false to bound the latest review year, or drop reviewed_from and reviewed_to to list reserves with no recorded review, then call unesco_search_biosphere_reserves again.',
     },
     {
       reason: 'sort_needs_input',
@@ -323,6 +346,26 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
         `designated_from (${input.designated_from}) is later than designated_to (${input.designated_to}).`,
       );
     }
+    // The conflict goes first: its recovery drops the bounds, so a reversed range under it never needs its own call.
+    if (
+      input.reviewed === false &&
+      (input.reviewed_from !== undefined || input.reviewed_to !== undefined)
+    ) {
+      throw ctx.fail(
+        'review_filter_conflict',
+        'reviewed false keeps only reserves with no recorded periodic review, so reviewed_from and reviewed_to cannot apply.',
+      );
+    }
+    if (
+      input.reviewed_from !== undefined &&
+      input.reviewed_to !== undefined &&
+      input.reviewed_from > input.reviewed_to
+    ) {
+      throw ctx.fail(
+        'invalid_year_range',
+        `reviewed_from (${input.reviewed_from}) is later than reviewed_to (${input.reviewed_to}).`,
+      );
+    }
     const sort = input.sort ?? (input.query ? 'relevance' : input.near ? 'distance' : 'name');
     if ((sort === 'relevance' && !input.query) || (sort === 'distance' && !input.near)) {
       throw ctx.fail(
@@ -346,7 +389,7 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
       country = { code: input.country, name: countryDisplayName(input.country) };
     }
 
-    const limit = clampBudget(LIMIT_BUDGET, input.limit);
+    const limit = input.limit;
     const applied: AppliedFilters = {
       ...(input.query ? { query: input.query } : {}),
       ...(country ? { country } : {}),
@@ -356,9 +399,12 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
       ...(input.sids !== undefined ? { sids: input.sids } : {}),
       ...(input.designated_from !== undefined ? { designated_from: input.designated_from } : {}),
       ...(input.designated_to !== undefined ? { designated_to: input.designated_to } : {}),
+      ...(input.reviewed_from !== undefined ? { reviewed_from: input.reviewed_from } : {}),
+      ...(input.reviewed_to !== undefined ? { reviewed_to: input.reviewed_to } : {}),
+      ...(input.reviewed !== undefined ? { reviewed: input.reviewed } : {}),
       ...(input.near ? { near: input.near } : {}),
       sort,
-      limit: limit.applied,
+      limit,
       include_description: input.include_description,
     };
     const { limit: _limit, include_description: _includeDescription, ...fingerprinted } = applied;
@@ -410,6 +456,34 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
     const to = input.designated_to;
     if (to !== undefined)
       filters.push({ name: 'designated_to', test: (r) => r.designation_year <= to });
+    // The bounds read the latest review only; a reserve with none never matches them.
+    const reviewedFrom = input.reviewed_from;
+    if (reviewedFrom !== undefined) {
+      filters.push({
+        name: 'reviewed_from',
+        test: (r) => {
+          const last = lastPeriodicReview(r);
+          return last !== undefined && last >= reviewedFrom;
+        },
+      });
+    }
+    const reviewedTo = input.reviewed_to;
+    if (reviewedTo !== undefined) {
+      filters.push({
+        name: 'reviewed_to',
+        test: (r) => {
+          const last = lastPeriodicReview(r);
+          return last !== undefined && last <= reviewedTo;
+        },
+      });
+    }
+    const reviewed = input.reviewed;
+    if (reviewed !== undefined) {
+      filters.push({
+        name: 'reviewed',
+        test: (r) => (lastPeriodicReview(r) !== undefined) === reviewed,
+      });
+    }
     if (near) {
       filters.push({
         name: 'near',
@@ -423,7 +497,7 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
     ctx.enrich({ facets: reserveFacets(matched.map((i) => records[i] as BiosphereReserve)) });
 
     matched.sort(reserveComparator(sort, records, tierOf, distanceOf));
-    const page = matched.slice(offset, offset + limit.applied).map((i) => {
+    const page = matched.slice(offset, offset + limit).map((i) => {
       const km = distanceOf[i];
       return toRow(
         records[i] as BiosphereReserve,
@@ -432,7 +506,7 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
         input.include_description,
       );
     });
-    ctx.enrich({ truncated: false, shown: page.length, cap: limit.applied });
+    ctx.enrich({ truncated: false, shown: page.length, cap: limit });
 
     const fragments: string[] = [];
     if (total === 0) {
@@ -469,17 +543,16 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
 
     const { more, notice } = composePageNotice({
       fragments,
-      limit,
       offset,
       shown: page.length,
       total,
     });
     let next_cursor: string | undefined;
     if (more) {
-      ctx.enrich.truncated({ shown: page.length, cap: limit.applied, guidance: notice });
+      ctx.enrich.truncated({ shown: page.length, cap: limit, guidance: notice });
       next_cursor = makeCursor({
         offset: offset + page.length,
-        limit: limit.applied,
+        limit,
         fp,
         asOf: biosphere.asOf,
       });
@@ -499,6 +572,9 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
         r.regions.join(', '),
         r.regional_network ?? 'No regional network',
         `Designated ${r.designation_year}`,
+        r.last_periodic_review_year !== undefined
+          ? `Last periodic review ${r.last_periodic_review_year}`
+          : 'No periodic review recorded',
         `Transboundary: ${r.transboundary ? 'Yes' : 'No'}`,
         `SIDS: ${r.sids ? 'Yes' : 'No'}`,
         `Area: ${r.area_total_hectares} ha (marine ${r.area_marine_hectares} ha)`,
@@ -515,12 +591,22 @@ export const searchBiosphereReservesTool = tool('unesco_search_biosphere_reserve
   },
 });
 
+/**
+ * The latest recorded periodic review year: the maximum, since UNESCO does not
+ * always list the years in order (`2017, 2016`). Undefined when none is recorded.
+ */
+function lastPeriodicReview(reserve: BiosphereReserve): number | undefined {
+  const years = reserve.periodic_review_years;
+  return years.length > 0 ? Math.max(...years) : undefined;
+}
+
 function toRow(
   reserve: BiosphereReserve,
   tier: number | undefined,
   distance: number | undefined,
   includeDescription: boolean,
 ): ReserveRowT {
+  const lastReview = lastPeriodicReview(reserve);
   return {
     mab_id: reserve.mab_id,
     name: reserve.name,
@@ -529,6 +615,7 @@ function toRow(
     regions: reserve.regions,
     ...(reserve.regional_network ? { regional_network: reserve.regional_network } : {}),
     designation_year: reserve.designation_year,
+    ...(lastReview !== undefined ? { last_periodic_review_year: lastReview } : {}),
     transboundary: reserve.transboundary,
     sids: reserve.sids,
     area_total_hectares: reserve.area_hectares.total,
@@ -611,6 +698,9 @@ function renderAppliedFilters(a: AppliedFilters): string {
   if (a.sids !== undefined) lines.push(`- sids: ${a.sids}`);
   if (a.designated_from !== undefined) lines.push(`- designated_from: ${a.designated_from}`);
   if (a.designated_to !== undefined) lines.push(`- designated_to: ${a.designated_to}`);
+  if (a.reviewed_from !== undefined) lines.push(`- reviewed_from: ${a.reviewed_from}`);
+  if (a.reviewed_to !== undefined) lines.push(`- reviewed_to: ${a.reviewed_to}`);
+  if (a.reviewed !== undefined) lines.push(`- reviewed: ${a.reviewed}`);
   if (a.near)
     lines.push(`- near: ${a.near.latitude}, ${a.near.longitude} within ${a.near.radius_km} km`);
   lines.push(

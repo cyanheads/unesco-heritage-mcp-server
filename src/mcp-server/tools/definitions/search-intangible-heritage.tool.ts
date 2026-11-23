@@ -20,11 +20,9 @@ import {
 import {
   blankAsUnset,
   booleanInput,
-  clampBudget,
   countryInput,
   cursorInput,
   foldToEnum,
-  LIMIT_BUDGET,
   limitInput,
   MAX_QUERY_WORDS,
   optionalIdNoInput,
@@ -161,9 +159,7 @@ const AppliedFiltersSchema = z
     inscribed_from: z.number().optional().describe('Earliest inscription year.'),
     inscribed_to: z.number().optional().describe('Latest inscription year.'),
     sort: z.enum(SORTS).describe('The sort applied (resolved default when none was given).'),
-    limit: z
-      .number()
-      .describe(`Page size applied: limit, or ${LIMIT_BUDGET.cap} when limit was larger.`),
+    limit: z.number().describe('Page size applied: the requested limit.'),
   })
   .describe('The filters and sort as the server applied them.');
 type AppliedFilters = z.infer<typeof AppliedFiltersSchema>;
@@ -302,7 +298,7 @@ export const searchIntangibleHeritageTool = tool('unesco_search_intangible_herit
       country = { code: input.country, name: countryDisplayName(input.country) };
     }
 
-    const limit = clampBudget(LIMIT_BUDGET, input.limit);
+    const limit = input.limit;
     const applied: AppliedFilters = {
       ...(input.query ? { query: input.query } : {}),
       ...(country ? { country } : {}),
@@ -312,7 +308,7 @@ export const searchIntangibleHeritageTool = tool('unesco_search_intangible_herit
       ...(input.inscribed_from !== undefined ? { inscribed_from: input.inscribed_from } : {}),
       ...(input.inscribed_to !== undefined ? { inscribed_to: input.inscribed_to } : {}),
       sort,
-      limit: limit.applied,
+      limit,
     };
     const { limit: _limit, ...fingerprinted } = applied;
     const fp = fingerprint(fingerprinted);
@@ -365,9 +361,9 @@ export const searchIntangibleHeritageTool = tool('unesco_search_intangible_herit
 
     matched.sort(elementComparator(sort, records, tierOf));
     const page = matched
-      .slice(offset, offset + limit.applied)
+      .slice(offset, offset + limit)
       .map((i) => toRow(records[i] as IntangibleElement, tierOf[i]));
-    ctx.enrich({ truncated: false, shown: page.length, cap: limit.applied });
+    ctx.enrich({ truncated: false, shown: page.length, cap: limit });
 
     const fragments: string[] = [];
     if (total === 0) {
@@ -415,17 +411,16 @@ export const searchIntangibleHeritageTool = tool('unesco_search_intangible_herit
 
     const { more, notice } = composePageNotice({
       fragments,
-      limit,
       offset,
       shown: page.length,
       total,
     });
     let next_cursor: string | undefined;
     if (more) {
-      ctx.enrich.truncated({ shown: page.length, cap: limit.applied, guidance: notice });
+      ctx.enrich.truncated({ shown: page.length, cap: limit, guidance: notice });
       next_cursor = makeCursor({
         offset: offset + page.length,
-        limit: limit.applied,
+        limit,
         fp,
         asOf: intangible.asOf,
       });

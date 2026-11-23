@@ -1,8 +1,8 @@
 /**
  * @fileoverview Tests for the shared input schemas: blank-as-unset wrapping,
  * enum folding, description-language/country/region/year/query/pagination/
- * boolean inputs, the output budgets and their clamp, the `near` point, and
- * the record-id normalizers.
+ * boolean inputs, the output budgets and their 10,000 ceiling, the `near`
+ * point, and the record-id normalizers.
  * @module tests/shared/inputs.test
  */
 
@@ -13,8 +13,6 @@ import {
   blankAsUnset,
   booleanInput,
   budgetInput,
-  COMPONENTS_BUDGET,
-  clampBudget,
   countryInput,
   cursorInput,
   descriptionLanguageInput,
@@ -23,7 +21,6 @@ import {
   idNoInput,
   includeDescriptionInput,
   isBlank,
-  LIMIT_BUDGET,
   limitInput,
   nearInput,
   normalizeIchRef,
@@ -285,19 +282,22 @@ describe('limitInput / cursorInput', () => {
     expect(parsed(limitInput, '  ')).toBe(20);
   });
 
-  it('accepts 1–10000, leaving the clamp to 50 to the handler, and rejects everything else', () => {
-    expect(parsed(limitInput, 1)).toBe(1);
-    expect(parsed(limitInput, 50)).toBe(50);
-    expect(parsed(limitInput, 51)).toBe(51);
-    expect(parsed(limitInput, 10_000)).toBe(10_000);
-    for (const bad of [0, 10_001, -3, 2.5, null, '10'])
+  it('accepts 1–10000 as sent, with no smaller cap, and rejects everything else', () => {
+    for (const ok of [1, 20, 50, 51, 100, 1000, 1001, 9_999, 10_000])
+      expect(parsed(limitInput, ok), String(ok)).toBe(ok);
+    for (const bad of [0, -1, -3, 1.5, 2.5, 10_001, 'abc', '10', true, null])
       expect(rejects(limitInput, bad), String(bad)).toBe(true);
   });
 
-  it('advertises the 10000 ceiling as its maximum', () => {
-    expect(z.toJSONSchema(z.object({ limit: limitInput }), { io: 'input' })).toMatchObject({
+  it('advertises the 10000 ceiling as its maximum and promises no smaller per-page cap', () => {
+    const json = z.toJSONSchema(z.object({ limit: limitInput }), { io: 'input' }) as unknown as {
+      properties: { limit: { description: string } };
+    };
+    expect(json).toMatchObject({
       properties: { limit: { minimum: 1, maximum: 10_000, default: 20 } },
     });
+    expect(json.properties.limit.description).toContain('10000');
+    expect(json.properties.limit.description).not.toMatch(/(?<!\d)50(?!\d)|cap/);
   });
 
   it('reads a blank cursor as unset and caps it at 1024 characters', () => {
@@ -323,50 +323,14 @@ describe('output budgets', () => {
     },
   );
 
-  it('names the 10000 ceiling when rejecting a value above it', () => {
-    const result = parseField(budgetInput(1, 20, 'A budget.'), 10_001);
+  it.each([
+    ['limit', limitInput],
+    ['a minimum-0 budget (max_components)', budgetInput(0, 20, 'A budget.')],
+  ])('%s names the 10000 ceiling when rejecting a value above it', (_label, schema) => {
+    const result = parseField(schema, 10_001);
     expect(result.success).toBe(false);
     expect(result.error?.issues[0]).toMatchObject({ code: 'too_big', maximum: 10_000 });
     expect(result.error?.issues[0]?.message).toMatch(/(?<!\d)10000(?!\d)/);
-  });
-
-  it.each([
-    ['limit within the cap', LIMIT_BUDGET, 1, { applied: 1 }],
-    ['limit at the cap', LIMIT_BUDGET, 50, { applied: 50 }],
-    [
-      'limit one above the cap',
-      LIMIT_BUDGET,
-      51,
-      {
-        applied: 50,
-        fragment:
-          'limit 51 is above the per-call cap of 50, so this page holds at most 50 results.',
-      },
-    ],
-    [
-      'limit at the ceiling',
-      LIMIT_BUDGET,
-      10_000,
-      {
-        applied: 50,
-        fragment:
-          'limit 10000 is above the per-call cap of 50, so this page holds at most 50 results.',
-      },
-    ],
-    ['max_components 0', COMPONENTS_BUDGET, 0, { applied: 0 }],
-    ['max_components at the cap', COMPONENTS_BUDGET, 1000, { applied: 1000 }],
-    [
-      'max_components one above the cap',
-      COMPONENTS_BUDGET,
-      1001,
-      {
-        applied: 1000,
-        fragment:
-          'max_components 1001 is above the per-call cap of 1000, so at most 1000 components are listed.',
-      },
-    ],
-  ])('clampBudget: %s', (_label, budget, requested, expected) => {
-    expect(clampBudget(budget, requested)).toEqual(expected);
   });
 });
 

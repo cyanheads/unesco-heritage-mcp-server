@@ -84,6 +84,10 @@ const search = async (input: Record<string, unknown> = {}) => {
 
 const ids = (out: SearchOutput) => out.geoparks.map((g) => g.ugg_id);
 
+/** More pages than any walk in this file takes; a walk still holding a cursor past it never ends. */
+const MAX_WALK_PAGES = 50;
+
+/** Every page of a walk, following next_cursor until it is absent; fails past MAX_WALK_PAGES. */
 async function walk(input: Record<string, unknown>) {
   const pages: SearchOutput[] = [];
   let cursor: string | undefined;
@@ -91,7 +95,11 @@ async function walk(input: Record<string, unknown>) {
     const { out } = await search({ ...input, ...(cursor ? { cursor } : {}) });
     pages.push(out);
     cursor = out.next_cursor;
-  } while (cursor);
+  } while (cursor && pages.length < MAX_WALK_PAGES);
+  expect(
+    cursor,
+    `next_cursor still set after ${MAX_WALK_PAGES} pages of ${JSON.stringify(input)}`,
+  ).toBeUndefined();
   return pages;
 }
 
@@ -653,7 +661,7 @@ describe('unesco_search_geoparks — pagination and cursors', () => {
     expect(last.next_cursor).toBeUndefined();
   });
 
-  it('applies the default page size of 20 and caps at 50', async () => {
+  it('applies the default page size of 20 and serves a limit of 50 whole', async () => {
     expect((await search()).out).toMatchObject({ shown: 20, cap: 20, truncated: true });
     const wide = (await search({ limit: 50 })).out;
     expect(wide).toMatchObject({ shown: 45, cap: 50, truncated: false });
@@ -769,37 +777,77 @@ describe('unesco_search_geoparks — pagination and cursors', () => {
   });
 });
 
-describe('unesco_search_geoparks — limit above the per-call cap', () => {
+describe('unesco_search_geoparks — a limit above 50', () => {
+  /** ugg_ids LG{from}…LG{to}; with 99 rows, name order is id order. */
+  const lg = (from: number, to: number) =>
+    Array.from({ length: to - from + 1 }, (_, i) => `LG${String(from + i).padStart(2, '0')}`);
+
   beforeEach(() => {
-    useHub({ rows: { eg0001: manyEgRows(120) } });
+    useHub({ rows: { eg0001: manyEgRows(99) } });
   });
 
-  it.each([51, 10_000])(
-    'serves limit %i as the limit-50 page, the clamp leading notice',
-    async (limit) => {
-      const atCap = await search({ limit: 50 });
-      expect(atCap.out.notice).toBe('Showing results 1–50 of 120; pass next_cursor to continue.');
-      const { out, text } = await search({ limit });
-      expect(ids(out)).toEqual(ids(atCap.out));
-      expect(out).toMatchObject({ totalCount: 120, shown: 50, cap: 50, truncated: true });
-      expect(out.next_cursor).toBe(atCap.out.next_cursor);
-      expect(out.applied_filters.limit).toBe(50);
-      expect(out.notice).toBe(
-        `limit ${limit} is above the per-call cap of 50, so this page holds at most 50 results. Showing results 1–50 of 120; pass next_cursor to continue.`,
-      );
-      expect(text).toContain(out.notice as string);
-    },
-  );
+  it.each([51, 60])('serves limit %i as a page of that many geoparks', async (limit) => {
+    const { out, text } = await search({ limit });
+    expect(ids(out)).toEqual(lg(1, limit));
+    expect(out).toMatchObject({ totalCount: 99, shown: limit, cap: limit, truncated: true });
+    expect(out.applied_filters.limit).toBe(limit);
+    expect(out.next_cursor).toBeDefined();
+    expect(out.notice).toBe(`Showing results 1–${limit} of 99; pass next_cursor to continue.`);
+    expect(text).toContain(`**${limit} geoparks on this page**`);
+    expect(text).toContain(`- limit: ${limit}`);
+    expect(text).toContain(out.notice as string);
+    expect(text).not.toContain('per-call cap');
+  });
 
-  it('continues a clamped page with results 51–100', async () => {
+  it.each([99, 100, 10_000])('serves the whole match on one page for limit %i', async (limit) => {
+    const { out, text } = await search({ limit });
+    expect(ids(out)).toEqual(lg(1, 99));
+    expect(out).toMatchObject({ totalCount: 99, shown: 99, cap: limit, truncated: false });
+    expect(out.applied_filters.limit).toBe(limit);
+    expect(out.next_cursor).toBeUndefined();
+    expect(out.notice).toBeUndefined();
+    expect(text).toContain('**99 geoparks on this page**');
+    expect(text).toContain(`- limit: ${limit}`);
+    expect(text).not.toContain('per-call cap');
+  });
+
+  it('pages each continuation from its offset with the limit of the call that carries it', async () => {
     const first = (await search({ limit: 51 })).out;
-    const second = (await search({ limit: 51, cursor: first.next_cursor })).out;
-    const atCap = (await search({ limit: 50 })).out;
-    const atCapSecond = (await search({ limit: 50, cursor: atCap.next_cursor })).out;
-    expect(ids(second)).toEqual(ids(atCapSecond));
-    expect(second.notice).toBe(
-      'limit 51 is above the per-call cap of 50, so this page holds at most 50 results. Showing results 51–100 of 120; pass next_cursor to continue.',
+    const second = (await search({ limit: 30, cursor: first.next_cursor })).out;
+    expect(ids(second)).toEqual(lg(52, 81));
+    expect(second).toMatchObject({ shown: 30, cap: 30, truncated: true });
+    expect(second.notice).toBe('Showing results 52–81 of 99; pass next_cursor to continue.');
+    const last = (await search({ limit: 10_000, cursor: second.next_cursor })).out;
+    expect(ids(last)).toEqual(lg(82, 99));
+    expect(last).toMatchObject({ shown: 18, cap: 10_000, truncated: false });
+    expect(last.next_cursor).toBeUndefined();
+    expect(last.notice).toBeUndefined();
+  });
+
+  it('continues a cursor minted at offset 50 with limit 50 using the larger limit of the call', async () => {
+    const state = readCursor(
+      (await search({ limit: 10 })).out.next_cursor as string,
+      requestContextService.createRequestContext({ operation: 'test' }),
     );
+    const cursor = makeCursor({ ...state, offset: 50, limit: 50 });
+    const { out } = await search({ limit: 60, cursor });
+    expect(ids(out)).toEqual(lg(51, 99));
+    expect(out).toMatchObject({ shown: 49, cap: 60, truncated: false });
+    expect(out.applied_filters.limit).toBe(60);
+    expect(out.notice).toBeUndefined();
+  });
+
+  it('still rejects a large-limit cursor used with a changed filter as cursor_mismatch', async () => {
+    const first = (await search({ limit: 60 })).out;
+    const result = await runToolContract(tool, {
+      limit: 60,
+      country: 'FR',
+      cursor: first.next_cursor,
+    } as never);
+    expect(errorOf(result).data).toMatchObject({
+      reason: 'cursor_mismatch',
+      recovery: { hint: declaredRecovery(tool.errors, 'cursor_mismatch') },
+    });
   });
 
   it('rejects limit 10001, naming the 10000 ceiling', async () => {

@@ -18,11 +18,9 @@ import {
 import {
   blankAsUnset,
   booleanInput,
-  clampBudget,
   countryInput,
   cursorInput,
   includeDescriptionInput,
-  LIMIT_BUDGET,
   limitInput,
   MAX_QUERY_WORDS,
   nearInput,
@@ -162,9 +160,7 @@ const AppliedFiltersSchema = z
       .optional()
       .describe('Distance filter.'),
     sort: z.enum(SORTS).describe('The sort applied (resolved default when none was given).'),
-    limit: z
-      .number()
-      .describe(`Page size applied: limit, or ${LIMIT_BUDGET.cap} when limit was larger.`),
+    limit: z.number().describe('Page size applied: the requested limit.'),
     include_description: z.boolean().describe('Whether rows carry their introduction.'),
   })
   .describe('The filters and sort as the server applied them.');
@@ -304,7 +300,7 @@ export const searchGeoparksTool = tool('unesco_search_geoparks', {
       country = { code: input.country, name: countryDisplayName(input.country) };
     }
 
-    const limit = clampBudget(LIMIT_BUDGET, input.limit);
+    const limit = input.limit;
     const applied: AppliedFilters = {
       ...(input.query ? { query: input.query } : {}),
       ...(country ? { country } : {}),
@@ -313,7 +309,7 @@ export const searchGeoparksTool = tool('unesco_search_geoparks', {
       ...(input.designated_to !== undefined ? { designated_to: input.designated_to } : {}),
       ...(input.near ? { near: input.near } : {}),
       sort,
-      limit: limit.applied,
+      limit,
       include_description: input.include_description,
     };
     const { limit: _limit, include_description: _includeDescription, ...fingerprinted } = applied;
@@ -368,7 +364,7 @@ export const searchGeoparksTool = tool('unesco_search_geoparks', {
     ctx.enrich({ facets: geoparkFacets(matched.map((i) => records[i] as Geopark)) });
 
     matched.sort(geoparkComparator(sort, records, tierOf, distanceOf));
-    const page = matched.slice(offset, offset + limit.applied).map((i) => {
+    const page = matched.slice(offset, offset + limit).map((i) => {
       const km = distanceOf[i];
       return toRow(
         records[i] as Geopark,
@@ -377,7 +373,7 @@ export const searchGeoparksTool = tool('unesco_search_geoparks', {
         input.include_description,
       );
     });
-    ctx.enrich({ truncated: false, shown: page.length, cap: limit.applied });
+    ctx.enrich({ truncated: false, shown: page.length, cap: limit });
 
     const fragments: string[] = [];
     if (total === 0) {
@@ -421,17 +417,16 @@ export const searchGeoparksTool = tool('unesco_search_geoparks', {
 
     const { more, notice } = composePageNotice({
       fragments,
-      limit,
       offset,
       shown: page.length,
       total,
     });
     let next_cursor: string | undefined;
     if (more) {
-      ctx.enrich.truncated({ shown: page.length, cap: limit.applied, guidance: notice });
+      ctx.enrich.truncated({ shown: page.length, cap: limit, guidance: notice });
       next_cursor = makeCursor({
         offset: offset + page.length,
-        limit: limit.applied,
+        limit,
         fp,
         asOf: geoparks.asOf,
       });

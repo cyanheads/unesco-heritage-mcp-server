@@ -8,7 +8,7 @@
  * @module tests/tools/get-site.tool.test
  */
 
-import type { z } from '@cyanheads/mcp-ts-core';
+import { z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -160,6 +160,7 @@ describe('unesco_get_site — record', () => {
     expect(text).toContain('**Coordinates:** Not available');
     expect(text).toContain('**Image:** Not available');
     expect(text).not.toContain('**Components**');
+    expect(text).toContain('**Components:** None listed');
   });
 
   it('renders "Not recorded" for a site with no criteria at all', async () => {
@@ -279,7 +280,7 @@ describe('unesco_get_site — max_components', () => {
     expect(out.components_total).toBe(25);
     expect(out).toMatchObject({ truncated: true, shown: 20, cap: 20 });
     expect(out.notice).toBe(
-      'Showing 20 of 25 components; call unesco_get_site with a higher max_components (up to 1000) to list more.',
+      'Showing 20 of 25 components; call unesco_get_site with a higher max_components (up to 10,000) to list more.',
     );
     expect(text).toContain('**Components** (20 of 25)');
     expect(text).toContain(out.notice as string);
@@ -302,6 +303,9 @@ describe('unesco_get_site — max_components', () => {
     expect(out.components).toEqual([]);
     expect(out.components_total).toBe(25);
     expect(out).toMatchObject({ truncated: true, shown: 0, cap: 0 });
+    expect(out.notice).toBe(
+      'Showing 0 of 25 components; call unesco_get_site with a higher max_components (up to 10,000) to list more.',
+    );
     expect(text).toContain('**Components** (0 of 25)');
   });
 
@@ -311,7 +315,7 @@ describe('unesco_get_site — max_components', () => {
     expect(out.notice).toBeUndefined();
   });
 
-  it('lists all 25 at the maximum cap without truncation', async () => {
+  it('lists all 25 for max_components 1000 without truncation', async () => {
     const { out } = await get({ id_no: '109', max_components: 1000 });
     expect(out.components).toHaveLength(25);
     expect(out).toMatchObject({ truncated: false, shown: 25, cap: 1000 });
@@ -333,6 +337,15 @@ describe('unesco_get_site — max_components', () => {
     },
   );
 
+  it('advertises the 10000 ceiling as the maximum and promises no smaller cap', () => {
+    const json = z.toJSONSchema(getSiteTool.input, { io: 'input' }) as unknown as {
+      properties: { max_components: { description: string; maximum: number; minimum: number } };
+    };
+    expect(json.properties.max_components).toMatchObject({ minimum: 0, maximum: 10_000 });
+    expect(json.properties.max_components.description).toContain('10000');
+    expect(json.properties.max_components.description).not.toMatch(/(?<!\d)1000(?!\d)|cap/);
+  });
+
   it('rejects max_components 10001, naming the 10000 ceiling', async () => {
     const error = errorOf(
       await runToolContract(getSiteTool, { id_no: '101', max_components: 10_001 } as never),
@@ -341,22 +354,23 @@ describe('unesco_get_site — max_components', () => {
     expect(error.message).toContain('10000');
   });
 
-  it('serves max_components above 1000 at the cap, with the clamp as the notice', async () => {
+  it('serves max_components 1001 as requested: every component, no notice', async () => {
     const { out, text } = await get({ id_no: '109', max_components: 1001 });
     expect(out.components).toHaveLength(25);
-    expect(out).toMatchObject({ truncated: false, shown: 25, cap: 1000 });
-    expect(out.notice).toBe(
-      'max_components 1001 is above the per-call cap of 1000, so at most 1000 components are listed.',
-    );
-    expect(text).toContain(out.notice as string);
+    expect(out).toMatchObject({ truncated: false, shown: 25, cap: 1001 });
+    expect(out.notice).toBeUndefined();
+    expect(text).toContain('**Components** (25 of 25)');
+    expect(text).not.toContain('per-call cap');
   });
 
-  it('leads the unreadable-entry notice with the clamp', async () => {
-    const { out } = await get({ id_no: '108', max_components: 10_000 });
-    expect(out).toMatchObject({ truncated: false, shown: 4, cap: 1000 });
+  it('serves max_components 10000 as requested, with only the unreadable-entry notice', async () => {
+    const { out, text } = await get({ id_no: '108', max_components: 10_000 });
+    expect(out).toMatchObject({ truncated: false, shown: 4, cap: 10_000 });
     expect(out.notice).toBe(
-      "max_components 10000 is above the per-call cap of 1000, so at most 1000 components are listed. 1 of the site's 5 components could not be read from UNESCO's component list and are omitted.",
+      "1 of the site's 5 components could not be read from UNESCO's component list and are omitted.",
     );
+    expect(text).toContain(out.notice as string);
+    expect(text).not.toContain('per-call cap');
   });
 
   it('discloses unreadable component entries on the untruncated path', async () => {
@@ -380,12 +394,12 @@ describe('unesco_get_site — max_components', () => {
     const { out } = await get({ id_no: '108', max_components: 2 });
     expect(out).toMatchObject({ truncated: true, shown: 2, cap: 2 });
     expect(out.notice).toBe(
-      "Showing 2 of 4 components; call unesco_get_site with a higher max_components (up to 1000) to list more. 1 of the site's 5 components could not be read from UNESCO's component list and are omitted.",
+      "Showing 2 of 4 components; call unesco_get_site with a higher max_components (up to 10,000) to list more. 1 of the site's 5 components could not be read from UNESCO's component list and are omitted.",
     );
   });
 });
 
-describe('unesco_get_site — a site with more components than one call lists', () => {
+describe('unesco_get_site — a site with more than 1000 components', () => {
   const parts = Array.from({ length: 1001 }, (_, i) => ({
     name: `Part ${i + 1}`,
     ref: `950-${String(i + 1).padStart(4, '0')}`,
@@ -403,26 +417,38 @@ describe('unesco_get_site — a site with more components than one call lists', 
     });
   });
 
-  it('lists 1000 at the cap and does not advise raising max_components', async () => {
-    const { out } = await get({ id_no: '950', max_components: 1000 });
+  it('advises raising max_components when 1000 stops short of the 1001 parts', async () => {
+    const { out, text } = await get({ id_no: '950', max_components: 1000 });
     expect(out).toMatchObject({ truncated: true, shown: 1000, cap: 1000, components_total: 1001 });
-    expect(out.notice).toBe('Showing 1000 of 1001 components, the most one call lists.');
-  });
-
-  it('leads the truncation guidance with the clamp', async () => {
-    const { out, text } = await get({ id_no: '950', max_components: 1500 });
-    expect(out.components).toHaveLength(1000);
-    expect(out).toMatchObject({ truncated: true, shown: 1000, cap: 1000 });
     expect(out.notice).toBe(
-      'max_components 1500 is above the per-call cap of 1000, so at most 1000 components are listed. Showing 1000 of 1001 components, the most one call lists.',
+      'Showing 1000 of 1001 components; call unesco_get_site with a higher max_components (up to 10,000) to list more.',
     );
     expect(text).toContain(out.notice as string);
   });
 
-  it('keeps the raise-max_components guidance below the cap', async () => {
+  it.each([1001, 10_000])(
+    'lists all 1001 components for max_components %i, with cap the request and no notice',
+    async (max_components) => {
+      const { out, text } = await get({ id_no: '950', max_components });
+      expect(out.components).toHaveLength(1001);
+      expect(out.components.at(-1)?.ref).toBe('950-1001');
+      expect(out).toMatchObject({
+        truncated: false,
+        shown: 1001,
+        cap: max_components,
+        components_total: 1001,
+      });
+      expect(out.notice).toBeUndefined();
+      expect(text).toContain('**Components** (1001 of 1001)');
+      expect(text).toContain('- 950-1001 — Part 1001 (40, 10)');
+      expect(text).not.toContain('per-call cap');
+    },
+  );
+
+  it('gives the raise-max_components guidance for any request short of the part count', async () => {
     const { out } = await get({ id_no: '950', max_components: 999 });
     expect(out.notice).toBe(
-      'Showing 999 of 1001 components; call unesco_get_site with a higher max_components (up to 1000) to list more.',
+      'Showing 999 of 1001 components; call unesco_get_site with a higher max_components (up to 10,000) to list more.',
     );
   });
 });
@@ -871,21 +897,19 @@ describe('unesco_get_site — description_language', () => {
     expect(russian.description_language).toBe('ru');
   });
 
-  it('places the language fragment after the clamp and before the component guidance in the one notice', async () => {
-    const clamp =
-      'max_components 10000 is above the per-call cap of 1000, so at most 1000 components are listed.';
+  it('places the language fragment before the component guidance in the one notice', async () => {
     const fallback =
       'UNESCO publishes no Arabic description for this site; description is in English.';
     const unreadable =
       "1 of the site's 5 components could not be read from UNESCO's component list and are omitted.";
-    const clamped = await get({ id_no: '108', max_components: 10_000, description_language: 'ar' });
-    expect(clamped.out).toMatchObject({ truncated: false, cap: 1000, description_language: 'en' });
-    expect(clamped.out.notice).toBe(`${clamp} ${fallback} ${unreadable}`);
+    const whole = await get({ id_no: '108', max_components: 10_000, description_language: 'ar' });
+    expect(whole.out).toMatchObject({ truncated: false, cap: 10_000, description_language: 'en' });
+    expect(whole.out.notice).toBe(`${fallback} ${unreadable}`);
 
     const truncated = await get({ id_no: '108', max_components: 2, description_language: 'ar' });
     expect(truncated.out).toMatchObject({ truncated: true, shown: 2, cap: 2 });
     expect(truncated.out.notice).toBe(
-      `${fallback} Showing 2 of 4 components; call unesco_get_site with a higher max_components (up to 1000) to list more. ${unreadable}`,
+      `${fallback} Showing 2 of 4 components; call unesco_get_site with a higher max_components (up to 10,000) to list more. ${unreadable}`,
     );
     expect(truncated.text).toContain(truncated.out.notice as string);
   });

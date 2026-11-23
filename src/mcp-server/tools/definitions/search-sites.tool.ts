@@ -19,13 +19,11 @@ import {
 import {
   blankAsUnset,
   booleanInput,
-  clampBudget,
   countryInput,
   cursorInput,
   foldToEnum,
   includeDescriptionInput,
   isBlank,
-  LIMIT_BUDGET,
   limitInput,
   MAX_QUERY_WORDS,
   nearInput,
@@ -130,8 +128,23 @@ const SiteRow = z
       .optional()
       .describe('Year of the current Danger-list entry, when in danger.'),
     area_hectares: z.number().optional().describe('Area in hectares, when recorded.'),
-    latitude: z.number().optional().describe('Representative point latitude, when recorded.'),
-    longitude: z.number().optional().describe('Representative point longitude, when recorded.'),
+    latitude: z
+      .number()
+      .optional()
+      .describe(
+        'Representative point latitude, when recorded. A serial site has none of its own: unesco_get_site lists a point per component.',
+      ),
+    longitude: z
+      .number()
+      .optional()
+      .describe(
+        'Representative point longitude, when recorded. A serial site has none of its own.',
+      ),
+    components_total: z
+      .number()
+      .describe(
+        "UNESCO's component count for the site, the components_total unesco_get_site returns; 0 when UNESCO lists none.",
+      ),
     distance_km: z
       .number()
       .optional()
@@ -248,9 +261,7 @@ const AppliedFiltersSchema = z
       .optional()
       .describe('Distance filter.'),
     sort: z.enum(SORTS).describe('The sort applied (resolved default when none was given).'),
-    limit: z
-      .number()
-      .describe(`Page size applied: limit, or ${LIMIT_BUDGET.cap} when limit was larger.`),
+    limit: z.number().describe('Page size applied: the requested limit.'),
     include_description: z.boolean().describe('Whether rows carry their description.'),
   })
   .describe('The filters and sort as the server applied them.');
@@ -424,7 +435,7 @@ export const searchSitesTool = tool('unesco_search_sites', {
     const criteria = input.criteria
       ? CRITERIA_CODES.filter((c) => input.criteria?.includes(c))
       : undefined;
-    const limit = clampBudget(LIMIT_BUDGET, input.limit);
+    const limit = input.limit;
     const applied: AppliedFilters = {
       ...(input.query ? { query: input.query } : {}),
       ...(country ? { country } : {}),
@@ -437,7 +448,7 @@ export const searchSitesTool = tool('unesco_search_sites', {
       ...(input.inscribed_to !== undefined ? { inscribed_to: input.inscribed_to } : {}),
       ...(input.near ? { near: input.near } : {}),
       sort,
-      limit: limit.applied,
+      limit,
       include_description: input.include_description,
     };
     const { limit: _limit, include_description: _includeDescription, ...fingerprinted } = applied;
@@ -504,7 +515,7 @@ export const searchSitesTool = tool('unesco_search_sites', {
     ctx.enrich({ facets: siteFacets(matched.map((i) => records[i] as HeritageSite)) });
 
     matched.sort(siteComparator(sort, records, tierOf, distanceOf));
-    const page = matched.slice(offset, offset + limit.applied).map((i) => {
+    const page = matched.slice(offset, offset + limit).map((i) => {
       const site = records[i] as HeritageSite;
       const point = nearest[i];
       return toRow(
@@ -516,7 +527,7 @@ export const searchSitesTool = tool('unesco_search_sites', {
         input.include_description,
       );
     });
-    ctx.enrich({ truncated: false, shown: page.length, cap: limit.applied });
+    ctx.enrich({ truncated: false, shown: page.length, cap: limit });
 
     const fragments: string[] = [];
     if (total === 0) {
@@ -564,17 +575,16 @@ export const searchSitesTool = tool('unesco_search_sites', {
 
     const { more, notice } = composePageNotice({
       fragments,
-      limit,
       offset,
       shown: page.length,
       total,
     });
     let next_cursor: string | undefined;
     if (more) {
-      ctx.enrich.truncated({ shown: page.length, cap: limit.applied, guidance: notice });
+      ctx.enrich.truncated({ shown: page.length, cap: limit, guidance: notice });
       next_cursor = makeCursor({
         offset: offset + page.length,
-        limit: limit.applied,
+        limit,
         fp,
         asOf: heritage.asOf,
       });
@@ -619,7 +629,10 @@ export const searchSitesTool = tool('unesco_search_sites', {
         s.area_hectares !== undefined ? `Area: ${s.area_hectares} ha` : 'Area: Not available',
         s.latitude !== undefined && s.longitude !== undefined
           ? `Coordinates: ${s.latitude}, ${s.longitude}`
-          : 'Coordinates: Not available',
+          : s.components_total > 0
+            ? 'Coordinates: per component (unesco_get_site lists them)'
+            : 'Coordinates: Not available',
+        `Components: ${s.components_total > 0 ? s.components_total : 'none listed'}`,
         ...(s.distance_km !== undefined
           ? [`Distance: ${s.distance_km} km${componentNote(s.nearest_component)}`]
           : []),
@@ -739,6 +752,7 @@ function toRow(
     ...(site.area_hectares !== undefined ? { area_hectares: site.area_hectares } : {}),
     ...(site.latitude !== undefined ? { latitude: site.latitude } : {}),
     ...(site.longitude !== undefined ? { longitude: site.longitude } : {}),
+    components_total: site.components_total,
     ...(distanceKm !== undefined ? { distance_km: distanceKm } : {}),
     ...(component ? { nearest_component: component } : {}),
     ...(tier !== undefined ? { matched_in: MATCH_TIERS[tier] } : {}),

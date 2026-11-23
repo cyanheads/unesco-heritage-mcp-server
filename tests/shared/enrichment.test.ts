@@ -1,7 +1,7 @@
 /**
  * @fileoverview Tests for the shared enrichment fields: the sources schema and
- * trailer line, the page fields, the composed page notice with its leading
- * `limit` clamp fragment, and the get tools' description-language fragment.
+ * trailer line, the page fields, the composed page notice, and the get tools'
+ * description-language fragment.
  * @module tests/shared/enrichment.test
  */
 
@@ -15,7 +15,6 @@ import {
   sourcesField,
   sourcesFieldOf,
 } from '@/mcp-server/shared/enrichment.js';
-import { clampBudget, LIMIT_BUDGET } from '@/mcp-server/shared/inputs.js';
 import type { SourceEntry } from '@/services/unesco-datahub/types.js';
 import { DATASET_IDS } from '@/services/unesco-datahub/vocabulary.js';
 
@@ -141,11 +140,9 @@ describe('descriptionLanguageFragment', () => {
 });
 
 describe('composePageNotice', () => {
-  const limit = clampBudget(LIMIT_BUDGET, 20);
-
   it('joins the tool fragments with spaces when nothing remains', () => {
     expect(
-      composePageNotice({ fragments: ['One.', 'Two.'], limit, offset: 0, shown: 5, total: 5 }),
+      composePageNotice({ fragments: ['One.', 'Two.'], offset: 0, shown: 5, total: 5 }),
     ).toEqual({
       more: false,
       notice: 'One. Two.',
@@ -153,88 +150,66 @@ describe('composePageNotice', () => {
   });
 
   it('returns an empty notice when there are no fragments and no more results', () => {
-    expect(composePageNotice({ fragments: [], limit, offset: 0, shown: 0, total: 0 })).toEqual({
+    expect(composePageNotice({ fragments: [], offset: 0, shown: 0, total: 0 })).toEqual({
       more: false,
       notice: '',
     });
   });
 
   it('appends the 1-based continuation range when more results remain', () => {
-    expect(
-      composePageNotice({ fragments: ['Frag.'], limit, offset: 20, shown: 20, total: 45 }),
-    ).toEqual({
+    expect(composePageNotice({ fragments: ['Frag.'], offset: 20, shown: 20, total: 45 })).toEqual({
       more: true,
       notice: 'Frag. Showing results 21–40 of 45; pass next_cursor to continue.',
     });
   });
 
   it('carries only the continuation when there are no other fragments', () => {
-    expect(
-      composePageNotice({ fragments: [], limit, offset: 0, shown: 20, total: 21 }).notice,
-    ).toBe('Showing results 1–20 of 21; pass next_cursor to continue.');
+    expect(composePageNotice({ fragments: [], offset: 0, shown: 20, total: 21 }).notice).toBe(
+      'Showing results 1–20 of 21; pass next_cursor to continue.',
+    );
   });
 
   it('is not "more" when the page ends exactly at the total', () => {
-    expect(composePageNotice({ fragments: [], limit, offset: 20, shown: 5, total: 25 }).more).toBe(
-      false,
-    );
+    expect(composePageNotice({ fragments: [], offset: 20, shown: 5, total: 25 }).more).toBe(false);
   });
 
   it('is not "more" for a cursor past the end', () => {
-    expect(composePageNotice({ fragments: [], limit, offset: 60, shown: 0, total: 45 }).more).toBe(
-      false,
-    );
+    expect(composePageNotice({ fragments: [], offset: 60, shown: 0, total: 45 }).more).toBe(false);
   });
-
-  const CLAMP = 'limit 51 is above the per-call cap of 50, so this page holds at most 50 results.';
 
   it.each([
-    ['alone when nothing else applies', [], 0, 5, 5, false, CLAMP],
+    ['a whole match on one page', [], 0, 120, 120, false, ''],
     [
-      'before the continuation, as the truncation guidance',
+      'a page above 50 with more remaining',
       [],
       0,
-      50,
+      100,
       120,
       true,
-      `${CLAMP} Showing results 1–50 of 120; pass next_cursor to continue.`,
+      'Showing results 1–100 of 120; pass next_cursor to continue.',
     ],
     [
-      'before the zero-hit fragments',
-      ['No site matched all 2 filters.', 'Try fewer or broader words.'],
-      0,
-      0,
-      0,
-      false,
-      `${CLAMP} No site matched all 2 filters. Try fewer or broader words.`,
-    ],
-    [
-      'before a past-the-end fragment',
-      ['The cursor is past the last of 45 results.'],
-      60,
-      0,
-      45,
-      false,
-      `${CLAMP} The cursor is past the last of 45 results.`,
-    ],
-    [
-      'before tool fragments and the continuation on a later page',
+      'a later page of a different size',
       ['Frag.'],
-      50,
-      50,
+      51,
+      60,
       120,
       true,
-      `${CLAMP} Frag. Showing results 51–100 of 120; pass next_cursor to continue.`,
+      'Frag. Showing results 52–111 of 120; pass next_cursor to continue.',
     ],
-  ])('leads with a clamped limit %s', (_label, fragments, offset, shown, total, more, notice) => {
-    expect(
-      composePageNotice({
-        fragments,
-        limit: clampBudget(LIMIT_BUDGET, 51),
-        offset,
-        shown,
-        total,
-      }),
-    ).toEqual({ more, notice });
-  });
+    [
+      'the ceiling-sized page',
+      [],
+      0,
+      10_000,
+      10_001,
+      true,
+      'Showing results 1–10000 of 10001; pass next_cursor to continue.',
+    ],
+  ])(
+    'composes only the tool fragments and the continuation for %s, at any page size',
+    (_label, fragments, offset, shown, total, more, notice) => {
+      expect(composePageNotice({ fragments, offset, shown, total })).toEqual({ more, notice });
+    },
+  );
 });
