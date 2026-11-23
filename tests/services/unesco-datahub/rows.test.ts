@@ -1,9 +1,10 @@
 /**
- * @fileoverview Tests for the export-row schemas and their text length bounds,
- * the edge parsers (text cleanup, criteria and the criterion (vi) inference, the
- * `components_list` parser with its rejection count, the year parsers, the
- * `whc_sites` parser and its linear-time url check), and the row → domain
- * mappers, against synthetic fixture rows.
+ * @fileoverview Tests for the export-row schemas, their text length bounds, and
+ * their text booleans; the edge parsers (text cleanup, the ICH page markup and
+ * the World Heritage doubled apostrophes with their linear-time scans, criteria
+ * and the criterion (vi) inference, the `components_list` parser with its
+ * rejection count, the year parsers, the `whc_sites` parser and its linear-time
+ * url check); and the row → domain mappers, against synthetic fixture rows.
  * @module tests/services/unesco-datahub/rows.test
  */
 
@@ -22,11 +23,14 @@ import {
   parseComponentsList,
   parseCriteriaTxt,
   parseFusedYears,
+  parsePeriodicReviewYears,
   parseWhcSites,
+  stripIchMarkup,
   toBiosphereReserve,
   toGeopark,
   toHeritageSite,
   toIntangibleElement,
+  unescapeWhcApostrophes,
   WHC_FIELDS,
   WhcRowSchema,
   yearsIn,
@@ -35,7 +39,9 @@ import {
   componentsList,
   EG_ROWS,
   egRow,
+  ICH_MARKUP_ROWS,
   ichRow,
+  MAB_REVIEW_ROWS,
   mabRow,
   multiPoint,
   WHC_ROWS,
@@ -55,42 +61,56 @@ const geometry = (coordinates: unknown[]) => ({ type: 'MultiPoint', coordinates 
 const fill = (unit: string, length: number) =>
   unit.repeat(Math.ceil(length / unit.length)).slice(0, length);
 
-/** This thread's CPU time spent in `run`, in ms, which load on other cores does not inflate. */
-function threadCpuMs(run: () => void): number {
+/**
+ * This thread's CPU time per call of `run` over a batch of `calls` calls, in
+ * ms, which load on other cores does not inflate.
+ */
+function cpuMsPerCall(run: () => unknown, calls: number): number {
   const before = process.threadCpuUsage();
-  run();
+  for (let i = 0; i < calls; i += 1) run();
   const { user, system } = process.threadCpuUsage(before);
-  return (user + system) / 1_000;
+  return (user + system) / 1_000 / calls;
 }
 
 /**
- * Asserts `run` costs time linear in its input's length. The input doubles from
- * 5k to 320k characters (a 64× span). At each size, the fastest of three
- * 10-call batches after a warm-up must stay under `maxMsPerCall` of thread CPU
- * time, checked before the next size runs; across the span the per-call cost
- * must grow less than 256× (linear growth is 64×, quadratic 4,096×).
+ * Asserts `run` costs time linear in its input's length across a 64× span
+ * from `from` characters (5k → 320k by default). The input doubles, and each
+ * size is timed three times, each beside a fresh timing of the `from` input;
+ * every timing is a batch of calls that together read 64 × `from` characters,
+ * so a small input still measures above the timer's resolution. At each size
+ * the fastest per-call time must stay under `maxMsPerCall` of thread CPU before
+ * the next size runs, and the growth is the least of the three pair ratios, so
+ * a garbage-collection pause or a slower core under one timing cannot fail
+ * linear work. Across the span the growth must stay under 256× (linear is 64×,
+ * quadratic 4,096×). Call it from a test whose timeout is 0: vitest cannot
+ * interrupt a synchronous body.
  */
 function expectLinearTime(
   build: (length: number) => string,
   run: (input: string) => unknown,
   maxMsPerCall: number,
+  from = 5_000,
 ): void {
-  const perCall: number[] = [];
-  for (let size = 5_000; size <= 320_000; size *= 2) {
+  const largest = from * 64;
+  const calls = (input: string) => Math.max(1, Math.round(largest / input.length));
+  const base = build(from);
+  run(base);
+  let growth = 1;
+  for (let size = from * 2; size <= largest; size *= 2) {
     const input = build(size);
     run(input);
-    let best = Number.POSITIVE_INFINITY;
-    for (let batch = 0; batch < 3; batch += 1) {
-      const ms = threadCpuMs(() => {
-        for (let i = 0; i < 10; i += 1) run(input);
-      });
-      best = Math.min(best, ms / 10);
+    let fastest = Number.POSITIVE_INFINITY;
+    let least = Number.POSITIVE_INFINITY;
+    for (let pair = 0; pair < 3; pair += 1) {
+      const baseMs = cpuMsPerCall(() => run(base), calls(base));
+      const sizeMs = cpuMsPerCall(() => run(input), calls(input));
+      fastest = Math.min(fastest, sizeMs);
+      least = Math.min(least, sizeMs / Math.max(baseMs, 0.000_1));
     }
-    expect(best, `${size} characters`).toBeLessThan(maxMsPerCall);
-    perCall.push(best);
+    expect(fastest, `${size} characters`).toBeLessThan(maxMsPerCall);
+    growth = least;
   }
-  const first = Math.max(perCall[0] ?? 0, 0.001);
-  expect((perCall.at(-1) ?? 0) / first).toBeLessThan(256);
+  expect(growth, `growth over ${from}–${largest} characters`).toBeLessThan(256);
 }
 
 describe('field allowlists', () => {
@@ -240,8 +260,310 @@ describe('cleanText', () => {
       (_label, build) => {
         expectLinearTime(build, cleanText, 50);
       },
-      30_000,
+      0,
     );
+  });
+});
+
+/** Shapes every scan is timed on: one long line ending in a break, and line breaks throughout. */
+const LINE_SHAPES: [string, (length: number) => string][] = [
+  ['one long line ending in a break', (n) => `${fill('§1 x', n - 2)}\ny`],
+  ['line breaks throughout', (n) => fill('  \r\n', n)],
+];
+
+describe('stripIchMarkup', () => {
+  it.each([
+    ["''…'' around terms", "such as the ''dutar'' or ''gyjak''", 'such as the dutar or gyjak'],
+    [
+      '__…__ around a heading',
+      '__Case of extreme urgency__\n\nText',
+      'Case of extreme urgency\n\nText',
+    ],
+    [
+      'odd and in-word delimiters, every one dropped',
+      `''guslar''s and ''askiks" and ''ad-daff ''drums ___`,
+      'guslars and askiks" and ad-daff drums _',
+    ],
+    [
+      'a [[label|url]] link',
+      '([[Decision 18.COM 21|https://ich.unesco.org/en/decisions/18.COM/21]]).',
+      '(Decision 18.COM 21 (https://ich.unesco.org/en/decisions/18.COM/21)).',
+    ],
+    ['a link to an http URL', '[[Page|http://x.test/a]]', 'Page (http://x.test/a)'],
+    [
+      'a ^^text|upper^^ superscript',
+      'depuis le XVIII^^e|upper^^ siècle',
+      'depuis le XVIIIe siècle',
+    ],
+    [
+      'a media token on its own line',
+      'levels.\n-VIDEO:42132-MED-R-\n__Republic of Korea__',
+      'levels.\n\nRepublic of Korea',
+    ],
+    ['a leading media token', '-VIDEO:42131-MED-R-\n__North__\nText', '\n\nNorth\nText'],
+    ['a media token between CRLF breaks', 'a.\r\n-VIDEO:1-MED-R-\r\nb', 'a.\n\nb'],
+    ['a media token inside a line', 'a -VIDEO:7-MED-R- b', 'a \n\n b'],
+    [
+      'delimiters inside a link label and a superscript',
+      "[[''Term''|https://x.test/]] and ^^__e__|upper^^",
+      'Term (https://x.test/) and e',
+    ],
+    [
+      'delimiters inside a link URL, kept',
+      '[[Doc|https://x.test/a__b]]',
+      'Doc (https://x.test/a__b)',
+    ],
+  ])('rewrites %s', (_label, input, expected) => {
+    expect(stripIchMarkup(input)).toBe(expected);
+  });
+
+  it.each([
+    ['a single apostrophe and underscore', "Cas d'extrême urgence, un_tiret"],
+    ['a [[…]] without a target', '[[Decision 18.COM 21]]'],
+    ['a [[…]] whose target is not an http(s) URL', '[[Doc|ftp://x.test/a]] [[Doc|www.x.test]]'],
+    ['a [[…]] with a second pipe', '[[a|b|c]] [[a|https://x.test|c]]'],
+    ['a [[…]] label across a line break', '[[Doc\nmore|https://x.test/]]'],
+    ['a [[…]] with an empty label', '[[|https://x.test/]]'],
+    ['a superscript of another style, or none', 'XVIII^^e|lower^^ and ^^e^^'],
+    [
+      'other -VIDEO: and media text',
+      '-VIDEO:abc-MED-R- -VIDEO:12-MED-X- -PHOTO:1-MED-R- VIDEO:1-MED-R- -VIDEO:-MED-R-',
+    ],
+  ])('leaves %s unchanged', (_label, input) => {
+    expect(stripIchMarkup(input)).toBe(input);
+  });
+
+  it('loads both description languages of a markup-bearing element without the markup', () => {
+    const element = toIntangibleElement(IchRowSchema.parse(ICH_MARKUP_ROWS[0]));
+    expect(element.description).toBe(
+      'Northern Federation\nSynthetic wrestling is played with a satba belt.\nIt is taught at all levels.\n\nSouthern Republic\nSynthetic wrestling is a popular sport.\n\nOn 1 May 2024, the Committee renamed the element (Decision 19.COM 7 (https://ich.unesco.org/en/decisions/19.COM/7)).',
+    );
+    expect(element.description_translations).toEqual({
+      fr: "Fédération du Nord\nLa lutte se pratique depuis le XVIIIe siècle avec des satbas.\n\nRépublique du Sud\nCas d'extrême urgence, un_tiret, et le XIXe siècle.",
+    });
+  });
+
+  it('runs before cleanText: list, inline, and line-break tags and entities clean as before, line breaks kept', () => {
+    const element = toIntangibleElement(
+      IchRowSchema.parse(
+        ichRow({
+          description_en:
+            "<ul><li>__One__</li><li>''Two''</li></ul>A <b>bold</b><br />line &amp; more\n\nNext.",
+        }),
+      ),
+    );
+    expect(element.description).toBe('One\nTwo\nA bold line & more\n\nNext.');
+  });
+
+  it('leaves entity-encoded delimiters as text: they decode after the markup is read', () => {
+    const element = toIntangibleElement(
+      IchRowSchema.parse(ichRow({ description_en: '&#39;&#39;x&#39;&#39; &#95;&#95;y&#95;&#95;' })),
+    );
+    expect(element.description).toBe("''x'' __y__");
+  });
+
+  it('touches no element field but the two descriptions', () => {
+    const element = toIntangibleElement(
+      IchRowSchema.parse(
+        ichRow({
+          title_en: "The ''Name'' __Rite__ XVIII^^e|upper^^",
+          title_fr: 'Le __Rite__',
+          concepts_primary_names: ["''Term''"],
+          concepts_secondary_names: ['__Other__'],
+          main_image_caption_en: "A ''caption'' -VIDEO:1-MED-R- [[a|https://x.test/]]",
+          main_image_copyright: '__Owner__',
+          main_image_author: "''Author''",
+        }),
+      ),
+    );
+    expect(element).toMatchObject({
+      name: "The ''Name'' __Rite__ XVIII^^e|upper^^",
+      name_fr: 'Le __Rite__',
+      concepts: ["''Term''"],
+      concepts_secondary: ['__Other__'],
+      image: {
+        caption: "A ''caption'' -VIDEO:1-MED-R- [[a|https://x.test/]]",
+        copyright: '__Owner__',
+        author: "''Author''",
+      },
+    });
+  });
+
+  describe('runs in linear time on adversarial markup', () => {
+    it.each<[string, (length: number) => string]>([
+      ["many '' delimiters with no closer", (n) => fill("''a", n)],
+      ['many __ delimiters with no closer', (n) => fill('__a', n)],
+      ['an apostrophe run', (n) => fill("'", n)],
+      ['an underscore run', (n) => fill('_', n)],
+      ['[[ openers with no ]]', (n) => fill('[[a', n)],
+      ['one [[ opener before a long label run', (n) => `[[${'a'.repeat(n - 2)}`],
+      ['one link opener before a long URL run', (n) => `[[a|https://${'x'.repeat(n - 12)}`],
+      ['[[a|b|c]] repeated', (n) => fill('[[a|b|c]]', n)],
+      ['link openers with a URL and no ]]', (n) => fill('[[a|https://x', n)],
+      ['^^ openers with no closer', (n) => fill('^^a', n)],
+      ['one ^^ opener before a long run', (n) => `^^${'a'.repeat(n - 2)}`],
+      ['^^a|upper with no closing ^^', (n) => fill('^^a|upper', n)],
+      ['a run of -VIDEO: prefixes with no suffix', (n) => fill('-VIDEO:', n)],
+      ['-VIDEO: prefixes with digits and no suffix', (n) => fill('-VIDEO:1', n)],
+      ['one -VIDEO: prefix before a long digit run', (n) => `-VIDEO:${'1'.repeat(n - 7)}`],
+      ['media tokens missing their final dash', (n) => fill('-VIDEO:1-MED-R', n)],
+      ['[[ openers on separate lines', (n) => fill('[[a\n', n)],
+      ['^^ openers on separate lines', (n) => fill('^^a\r\n', n)],
+      ['-VIDEO: prefixes after line breaks', (n) => fill('\n-VIDEO:1', n)],
+      ["'' and __ on separate lines", (n) => fill("''\n__\n", n)],
+      ['one [[ opener before many line breaks', (n) => `[[${fill('a\n', n - 2)}`],
+      ...LINE_SHAPES,
+    ])(
+      '%s: linear in thread CPU time from 5k to 320k characters',
+      (_label, build) => {
+        expectLinearTime(build, stripIchMarkup, 50);
+      },
+      0,
+    );
+  });
+});
+
+describe('unescapeWhcApostrophes', () => {
+  it.each([
+    ["L''viv", "L'viv"],
+    ["called the ''Louvre of the Desert''.", "called the 'Louvre of the Desert'."],
+    ["s''étendent aujourd''hui", "s'étendent aujourd'hui"],
+    [`this ''Third Pole" of the world`, `this 'Third Pole" of the world`],
+    ["''''", "''"],
+    ["Earth's own apostrophe", "Earth's own apostrophe"],
+  ])('%j → %j', (input, expected) => {
+    expect(unescapeWhcApostrophes(input)).toBe(expected);
+  });
+
+  it.each([
+    [`the region's ''Third Pole" of the world`, `the region's "Third Pole" of the world`],
+    [`''Third Pole" for the world's rivers`, `"Third Pole" for the world's rivers`],
+    [`a site's ''name''`, `a site's "name"`],
+  ])(
+    "reads %j, which also holds a single apostrophe, as typed: '' is a double quote",
+    (input, expected) => {
+      expect(unescapeWhcApostrophes(input)).toBe(expected);
+    },
+  );
+
+  it('unescapes the description, every translation, and the statement, before cleanText', () => {
+    const { site } = toHeritageSite(
+      WhcRowSchema.parse(
+        whcRow({
+          short_description_en: "The city of L''viv &amp; the highest ''rebound''.",
+          short_description_fr: "Elles s''étendent <em>aujourd''hui</em>.",
+          short_description_es: "La ''ciudad''.",
+          short_description_ru: "Город ''Львов''.",
+          short_description_ar: "''مدينة''",
+          short_description_zh: "''城''",
+          justification_en: `Criterion (vi): this ''Third Pole" of the world.`,
+          criteria_txt: '(iv)',
+        }),
+      ),
+    );
+    expect(site.description).toBe("The city of L'viv & the highest 'rebound'.");
+    expect(site.description_translations).toEqual({
+      fr: "Elles s'étendent aujourd'hui.",
+      es: "La 'ciudad'.",
+      ru: "Город 'Львов'.",
+      ar: "'مدينة'",
+      zh: "'城'",
+    });
+    expect(site.justification).toBe(`Criterion (vi): this 'Third Pole" of the world.`);
+    expect(site.criteria_inferred).toEqual(['vi']);
+  });
+
+  it('leaves names, credits, and component names as written', () => {
+    const { site } = toHeritageSite(
+      WhcRowSchema.parse(
+        whcRow({
+          name_en: "Earth''s Edge",
+          name_fr: "L''Arête",
+          name_es: "La ''Arista''",
+          name_ru: "Край ''Земли''",
+          name_ar: "''حافة''",
+          name_zh: "''边缘''",
+          states_names: ["Party''s Name"],
+          main_image_copyright: "Studio''s Archive",
+          main_image_author: "O''Hara",
+          components_list: componentsList([
+            { name: "Part''s Gate", ref: '900-001', latitude: 48, longitude: 2 },
+          ]),
+        }),
+      ),
+    );
+    expect(site.name).toBe("Earth''s Edge");
+    expect(site.names.fr).toBe("L''Arête");
+    expect(site.names).toMatchObject({
+      es: "La ''Arista''",
+      ru: "Край ''Земли''",
+      ar: "''حافة''",
+      zh: "''边缘''",
+    });
+    expect(site.states).toEqual(["Party''s Name"]);
+    expect(site.image?.copyright).toBe("Studio''s Archive");
+    expect(site.image?.author).toBe("O''Hara");
+    expect(site.components[0]?.name).toBe("Part''s Gate");
+  });
+
+  it.each<[string, (length: number) => string]>([
+    ['an apostrophe run', (n) => fill("'", n)],
+    ['doubled apostrophes between letters', (n) => fill("''x", n)],
+    [
+      'doubled apostrophes, then one single apostrophe at the end',
+      (n) => `${fill("''x", n - 2)}x'`,
+    ],
+    ...LINE_SHAPES,
+  ])(
+    '%s: linear in thread CPU time from 5k to 320k characters',
+    (_label, build) => {
+      expectLinearTime(build, unescapeWhcApostrophes, 50);
+    },
+    0,
+  );
+});
+
+describe('text booleans', () => {
+  const flags = (value: string) => {
+    const { site } = toHeritageSite(
+      WhcRowSchema.parse(whcRow({ transboundary: value, danger: value })),
+    );
+    const reserve = toBiosphereReserve(MabRowSchema.parse(mabRow({ tbr: value, sids: value })));
+    const geopark = toGeopark(EgRowSchema.parse(egRow({ transnational: value })));
+    return [
+      site.transboundary,
+      site.in_danger,
+      reserve.transboundary,
+      reserve.sids,
+      geopark.transnational,
+    ];
+  };
+
+  it.each(['true', 'True', 'TRUE', 'tRuE'])('reads %j as true in all five fields', (value) => {
+    expect(flags(value)).toEqual([true, true, true, true, true]);
+  });
+
+  it.each(['false', 'False', 'FALSE'])('reads %j as false in all five fields', (value) => {
+    expect(flags(value)).toEqual([false, false, false, false, false]);
+  });
+
+  const FIELDS = [
+    ['whc001', WhcRowSchema, whcRow, 'transboundary'],
+    ['whc001', WhcRowSchema, whcRow, 'danger'],
+    ['mab001', MabRowSchema, mabRow, 'tbr'],
+    ['mab001', MabRowSchema, mabRow, 'sids'],
+    ['eg0001', EgRowSchema, egRow, 'transnational'],
+  ] as const;
+  const VALUES: unknown[] = ['yes', '', ' true', 'false ', '1', 'T', 'Truee', true, null];
+
+  it.each(
+    FIELDS.flatMap(([dataset, schema, row, field]) =>
+      VALUES.map((value) => [dataset, field, value, schema, row] as const),
+    ),
+  )('%s rejects %s %j', (_dataset, field, value, schema, row) => {
+    const result = schema.safeParse(row({ [field]: value }));
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path[0]).toBe(field);
   });
 });
 
@@ -467,6 +789,57 @@ describe('yearsIn', () => {
     expect(yearsIn('')).toEqual([]);
     expect(yearsIn('none')).toEqual([]);
   });
+
+  it('reads a follow-up marked year like any other, so secondary_years stays unchanged', () => {
+    expect(yearsIn('2014, FU 2016')).toEqual([2014, 2016]);
+    const row = WhcRowSchema.parse(
+      whcRow({ date_inscribed: '1990', secondary_dates: '1990, 2005,2012' }),
+    );
+    expect(toHeritageSite(row).site.secondary_years).toEqual([2005, 2012]);
+  });
+});
+
+describe('parsePeriodicReviewYears', () => {
+  it.each<[string, number[]]>([
+    ['2014, FU 2016', [2014]],
+    ['2013; FU 2015', [2013]],
+    ['2017, 2016', [2017, 2016]],
+    ['2003, 2013, 2023', [2003, 2013, 2023]],
+    ['1998; 2020', [1998, 2020]],
+    ['2010; 2020, March 2025', [2010, 2020, 2025]],
+    ['FU 2016', []],
+    ['FU2016, 2018', [2018]],
+  ])('%j → %j', (text, expected) => {
+    expect(parsePeriodicReviewYears(text)).toEqual(expected);
+  });
+
+  it('returns [] for null, empty, and yearless text', () => {
+    expect(parsePeriodicReviewYears(null)).toEqual([]);
+    expect(parsePeriodicReviewYears('')).toEqual([]);
+    expect(parsePeriodicReviewYears('none')).toEqual([]);
+  });
+
+  it("leaves a follow-up report year out of a reserve's review years, keeping recorded order", () => {
+    expect(
+      MAB_REVIEW_ROWS.map(
+        (row) => toBiosphereReserve(MabRowSchema.parse(row)).periodic_review_years,
+      ),
+    ).toEqual([[2014], [2013], [2017, 2016]]);
+  });
+
+  it.each<[string, (length: number) => string]>([
+    ['repeated FU markers with no year', (n) => fill('FU ', n)],
+    ['one FU marker before a whitespace run', (n) => `FU${' '.repeat(n - 2)}`],
+    ['FU markers on separate lines', (n) => fill('FU\n', n)],
+    ['a long digit run', (n) => '1'.repeat(n)],
+    ...LINE_SHAPES,
+  ])(
+    '%s: linear in thread CPU time from 5k to 320k characters',
+    (_label, build) => {
+      expectLinearTime(build, parsePeriodicReviewYears, 50);
+    },
+    0,
+  );
 });
 
 describe('parseFusedYears', () => {
@@ -573,7 +946,7 @@ describe('parseWhcSites', () => {
     const url = (n: number) => `${LIST}1${'2'.repeat(n - LIST.length - 2)}x`;
     expect(() => parseWhcSites(JSON.stringify([{ name_en: 'A', url: url(5_000) }]))).toThrow();
     expectLinearTime(url, run, 50);
-  }, 30_000);
+  }, 0);
 });
 
 describe('row schemas', () => {
@@ -609,7 +982,7 @@ describe('row schemas', () => {
     ['criteria_txt with an invalid numeral', { criteria_txt: '(xi)' }],
     ['criteria_txt without parentheses', { criteria_txt: 'ii' }],
     ['criteria_txt with a separator', { criteria_txt: '(ii), (iii)' }],
-    ['transboundary not True/False', { transboundary: 'yes' }],
+    ['transboundary not true/false', { transboundary: 'yes' }],
     ['a two-digit year', { date_inscribed: '88' }],
     ['danger_list without the Y prefix', { danger_list: '2015' }],
     ['danger_list with a short year', { danger_list: 'Y 15' }],
@@ -740,7 +1113,7 @@ describe('row schemas', () => {
     ['a countries entry ending in a comma', { countries: ['AT,'] }],
     ['no countries', { countries: [] }],
     ['a non-array countries value', { countries: 'FR' }],
-    ['transnational not True/False', { transnational: 'yes' }],
+    ['transnational not true/false', { transnational: 'yes' }],
     ['a date without month and day', { date: '2015' }],
     ['null coordinates', { coordinates: null }],
     ['a null url', { url: null }],
@@ -1614,7 +1987,7 @@ describe('toGeopark', () => {
     expect(geopark({ countries: ['BE', 'NL'] }).country_codes).toEqual(['BE', 'NL']);
   });
 
-  it('reads transnational from UNESCO\'s "True"/"False" text, not from the code count', () => {
+  it("reads transnational from UNESCO's boolean text, not from the code count", () => {
     expect(geopark({ transnational: 'True' }).transnational).toBe(true);
     expect(geopark({ countries: ['AT,SI'], transnational: 'False' }).transnational).toBe(false);
   });

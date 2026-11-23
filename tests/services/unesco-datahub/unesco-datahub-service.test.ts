@@ -38,6 +38,7 @@ import {
 import {
   EG_ROWS,
   egRow,
+  ICH_MARKUP_ROWS,
   ICH_ROWS,
   ichRow,
   MAB_ROWS,
@@ -170,6 +171,42 @@ describe('lazy load and snapshot contents', () => {
     expect(concepts).toContain(' textile craft community ritual');
     expect(description).toContain(' first paragraph');
   });
+
+  it('keeps the ICH page markup out of the description tier, the link URL words included', async () => {
+    const { service } = makeService({ rows: { ich001: [...ICH_ROWS, ...ICH_MARKUP_ROWS] } });
+    const snapshot = await service.getIntangible(ctx());
+    const index = snapshot.records.findIndex((e) => e.ich_ref === '1101');
+    const description = snapshot.folded[index]?.[2] ?? '';
+    expect(description).toContain(
+      ' northern federation synthetic wrestling is played with a satba',
+    );
+    expect(description).toContain(' decision 19 com 7 https ich unesco org en decisions 19 com 7');
+    for (const word of ['42131', '42132', 'video', 'med']) {
+      expect(description, word).not.toContain(` ${word}`);
+    }
+  });
+
+  it.each([
+    ['whc001', WHC_ROWS, ['transboundary', 'danger']],
+    ['mab001', MAB_ROWS, ['tbr', 'sids']],
+    ['eg0001', EG_ROWS, ['transnational']],
+  ] as const)(
+    'loads a %s export of lowercase booleans into the same records as the title-case one',
+    async (dataset, rows, fields) => {
+      const lower = rows.map((row) => ({
+        ...row,
+        ...Object.fromEntries(fields.map((field) => [field, String(row[field]).toLowerCase()])),
+      }));
+      expect(lower.some((row) => fields.some((field) => row[field] === 'true'))).toBe(true);
+      type Loaded = { records: unknown[] };
+      const titled = (await load(makeService().service, dataset)) as Loaded;
+      const lowered = (await load(
+        makeService({ rows: { [dataset]: lower } }).service,
+        dataset,
+      )) as Loaded;
+      expect(lowered.records).toEqual(titled.records);
+    },
+  );
 
   it('keys reserves by folded mab_id so lookups ignore case and diacritics', async () => {
     const { service } = makeService();
@@ -965,6 +1002,23 @@ describe('strict validation and integrity checks', () => {
     expect(await service.getHeritage(ctx())).toBe(first);
     await vi.waitFor(() => expect(warning).toHaveBeenCalled());
     expect(await service.getHeritage(ctx())).toBe(first);
+  });
+
+  it('keeps the previous snapshot when a refresh brings a boolean that is not true or false', async () => {
+    const TTL = 5_000;
+    const hubOptions: HubOptions = {};
+    const { service } = makeService(hubOptions, TTL);
+    const first = await service.getGeoparks(ctx());
+    clock += TTL;
+    hubOptions.rows = { eg0001: [egRow({ transnational: 'yes' })] };
+    const warning = vi.spyOn(logger, 'warning');
+    expect(await service.getGeoparks(ctx())).toBe(first);
+    await vi.waitFor(() =>
+      expect(warning.mock.calls.some((call) => String(call[0]).includes('transnational'))).toBe(
+        true,
+      ),
+    );
+    expect(await service.getGeoparks(ctx())).toBe(first);
   });
 
   it('logs the unparsed-component count once per load', async () => {

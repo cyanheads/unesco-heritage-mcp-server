@@ -21,7 +21,7 @@ import {
   withFakeTimers,
 } from '../fixtures/failures.js';
 import { httpFailure, transientFailure } from '../fixtures/hub.js';
-import { MAB_ROWS, mabRow } from '../fixtures/rows.js';
+import { MAB_REVIEW_ROWS, MAB_ROWS, mabRow } from '../fixtures/rows.js';
 import {
   allText,
   disposeServiceAfterEach,
@@ -127,6 +127,31 @@ describe('unesco_get_biosphere_reserve — record', () => {
     expect(text).toContain('- **Renaming years:** None');
     expect(text).toContain('- **Periodic review years:** None');
   });
+
+  it('lists periodic review years in recorded order and says a follow-up report year is no review', async () => {
+    useHub({
+      rows: { mab001: [mabRow({ mab_id: 'ZZOrder2002', periodic_review: '2017, 2016' })] },
+    });
+    const { out, text } = await get({ mab_id: 'ZZOrder2002' });
+    expect(out.periodic_review_years).toEqual([2017, 2016]);
+    expect(text).toContain('- **Periodic review years:** 2017, 2016');
+    const described = tool.output.shape.periodic_review_years.description ?? '';
+    expect(described).toContain('not always chronological');
+    expect(described).toContain('A follow-up report year (marked FU upstream) is not a review');
+  });
+
+  it.each([
+    ['FRFoll1979', '2014, FU 2016', 2014],
+    ['IDFoll1981', '2013; FU 2015', 2013],
+  ])(
+    'keeps the follow-up report year of %s (%s) out of its periodic review years, on both surfaces',
+    async (mab_id, _recorded, year) => {
+      useHub({ rows: { mab001: MAB_REVIEW_ROWS } });
+      const { out, text } = await get({ mab_id });
+      expect(out.periodic_review_years).toEqual([year]);
+      expect(text.split('\n')).toContain(`- **Periodic review years:** ${year}`);
+    },
+  );
 
   it('drops a website that is not an http(s) URL', async () => {
     const { out, text } = await get({ mab_id: 'DEBrin1993' });

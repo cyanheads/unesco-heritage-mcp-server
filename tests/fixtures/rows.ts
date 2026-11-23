@@ -653,6 +653,58 @@ export const ICH_ROWS: Record<string, unknown>[] = [
   }),
 ];
 
+/**
+ * `ich001` rows carrying the ICH site's page markup in both description
+ * languages, apart from the default rows. 1101 has two media tokens (the first
+ * leading the text), `__…__` headings on their own lines, a one-word `''…''`
+ * term, and a `[[label|url]]` link inside a `__…__` span; its French text adds
+ * `^^e|upper^^` superscripts, an in-word `''…''s` term, and a single `'` and `_`
+ * that stay.
+ */
+export const ICH_MARKUP_ROWS: Record<string, unknown>[] = [
+  ichRow({
+    ich_public_ref: '1101',
+    title_en: 'Synthetic Belt Wrestling',
+    title_fr: 'Lutte à la Ceinture Synthétique',
+    countries: ['FR', 'BE'],
+    description_en:
+      "-VIDEO:42131-MED-R-\n__Northern Federation__\nSynthetic wrestling is played with a ''satba'' belt.\nIt is taught at all levels.\n-VIDEO:42132-MED-R-\n__Southern Republic__\nSynthetic wrestling is a popular sport.\n\n__On 1 May 2024, the Committee renamed the element ([[Decision 19.COM 7|https://ich.unesco.org/en/decisions/19.COM/7]]).__",
+    description_fr:
+      "-VIDEO:42131-MED-R-\n__Fédération du Nord__\nLa lutte se pratique depuis le XVIII^^e|upper^^ siècle avec des ''satba''s.\n-VIDEO:42132-MED-R-\n__République du Sud__\nCas d'extrême urgence, un_tiret, et le XIX^^e|upper^^ siècle.",
+  }),
+];
+
+/**
+ * `mab001` rows whose `periodic_review` carries a follow-up report year (`FU`)
+ * or lists its years out of order, apart from the default rows: FRFoll1979
+ * reads `[2014]`, IDFoll1981 `[2013]`, and FROrder2002 `[2017, 2016]`.
+ */
+export const MAB_REVIEW_ROWS: Record<string, unknown>[] = [
+  mabRow({
+    mab_id: 'FRFoll1979',
+    title_en: 'Follow-up Steppe Reserve',
+    date: '1979-01-01',
+    periodic_review: '2014, FU 2016',
+  }),
+  mabRow({
+    mab_id: 'IDFoll1981',
+    title_en: 'Follow-up Island Reserve',
+    iso2: 'ID',
+    country_title_en: 'Indonesia',
+    date: '1981-01-01',
+    regional_network: null,
+    regional_group: 'Asia and the Pacific',
+    coordinates: { lon: 99.2, lat: -1.4 },
+    periodic_review: '2013; FU 2015',
+  }),
+  mabRow({
+    mab_id: 'FROrder2002',
+    title_en: 'Unordered Review Reserve',
+    date: '2002-01-01',
+    periodic_review: '2017, 2016',
+  }),
+];
+
 /** The default `mab001` fixture rows. */
 export const MAB_ROWS: Record<string, unknown>[] = [
   mabRow({

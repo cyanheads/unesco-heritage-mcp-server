@@ -62,7 +62,9 @@ export const getBiosphereReserveTool = tool('unesco_get_biosphere_reserve', {
       .describe('Years the reserve was renamed; empty when none.'),
     periodic_review_years: z
       .array(z.number().describe('Year.'))
-      .describe('Years of periodic review; empty when none recorded.'),
+      .describe(
+        'Years of periodic review, in the order UNESCO records them (not always chronological); empty when none recorded. A follow-up report year (marked FU upstream) is not a review and is not listed.',
+      ),
     transboundary: z
       .boolean()
       .describe('True for a transboundary reserve; each participating country has its own mab_id.'),

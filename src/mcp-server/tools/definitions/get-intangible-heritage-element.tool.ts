@@ -181,12 +181,16 @@ export const getIntangibleHeritageElementTool = tool('unesco_get_intangible_heri
       '',
     ];
     if (r.image) {
-      lines.push(
-        `**Image:** ${bareUrl(r.image.url)}`,
-        ...(r.image.caption ? [`Caption: ${inline(r.image.caption)}`] : []),
+      const credits = [
         ...(r.image.copyright ? [`© ${inline(r.image.copyright)}`] : []),
         ...(r.image.author ? [`Photo: ${inline(r.image.author)}`] : []),
-      );
+      ];
+      lines.push(`**Image:** ${bareUrl(r.image.url)}`);
+      // Blank lines around the quote keep the credit lines from continuing it.
+      if (r.image.caption) {
+        lines.push('', quoted('Caption', r.image.caption), ...(credits.length > 0 ? [''] : []));
+      }
+      lines.push(...credits);
     } else {
       lines.push('**Image:** Not available');
     }

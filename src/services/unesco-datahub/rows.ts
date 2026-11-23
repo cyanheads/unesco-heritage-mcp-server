@@ -2,9 +2,11 @@
  * @fileoverview Strict Zod schemas for the `exports/json` rows of `whc001`,
  * `ich001`, `mab001`, and `eg0001` (exactly the selected keys: the allowlist,
  * less any optional field the dataset's metadata no longer lists), the dataset
- * metadata schema, the edge parsers (text and URL entity decoding, criteria
- * and the criterion (vi) inference, the `components_list` and `whc_sites` JSON
- * strings, the year lists, booleans), and the row → domain mappers.
+ * metadata schema, the edge parsers (text and URL entity decoding, the ICH
+ * page markup in element descriptions, the doubled apostrophes in World
+ * Heritage descriptions and statements, criteria and the criterion (vi)
+ * inference, the `components_list` and `whc_sites` JSON strings, the year
+ * lists, booleans), and the row → domain mappers.
  * @module services/unesco-datahub/rows
  */
 
@@ -177,7 +179,12 @@ export const OPTIONAL_FIELDS = {
 /** `T` with the keys `K` optional: a row whose export may have left those fields out. */
 type WithOptional<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
 
-const TrueFalse = z.enum(['True', 'False']);
+/**
+ * UNESCO's text boolean, read as a boolean: `true` or `false` in any case
+ * (exported `True`/`False` until 2026-11, lowercase since). Any other value
+ * fails the row.
+ */
+const TextFlag = z.stringbool({ truthy: ['true'], falsy: ['false'], case: 'insensitive' });
 const Year = z.string().regex(/^\d{4}$/);
 /** A `mab001` / `eg0001` point. */
 const GeoPoint = z.object({ lon: z.number(), lat: z.number() }).strict();
@@ -235,10 +242,10 @@ export const WhcRowSchema = z
       .min(1)
       .nullable(),
     region: z.enum(REGIONS),
-    transboundary: TrueFalse,
+    transboundary: TextFlag,
     date_inscribed: Year,
     secondary_dates: ShortText,
-    danger: TrueFalse,
+    danger: TextFlag,
     danger_list: z
       .string()
       .regex(/^Y \d{4}$/)
@@ -310,11 +317,11 @@ export const MabRowSchema = z
     periodic_review: ShortText.nullable(),
     regional_network: z.enum(BIOSPHERE_NETWORK_NAMES).nullable(),
     coordinates: GeoPoint,
-    tbr: TrueFalse,
+    tbr: TextFlag,
     website: UrlText.nullable(),
     url: UrlText,
     regional_group: ShortText,
-    sids: TrueFalse,
+    sids: TextFlag,
   })
   .strict();
 export type MabRow = WithOptional<
@@ -331,7 +338,7 @@ export const EgRowSchema = z
     title_en: ShortText,
     /** One entry per row; a transnational geopark's entry joins its codes (`AT,SI`). */
     countries: z.array(ShortText.regex(/^[A-Z]{2}(?:,\s*[A-Z]{2})*$/)).min(1),
-    transnational: TrueFalse,
+    transnational: TextFlag,
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     introduction_en: FreeText,
     description: FreeText,
@@ -464,6 +471,55 @@ function safeCodePoint(code: number, fallback: string): string {
     : fallback;
 }
 
+/**
+ * The ICH site's page markup in element descriptions, one alternative per
+ * form: a `[[label|url]]` link to an http(s) URL; a `^^text|upper^^`
+ * superscript; a `-VIDEO:{digits}-MED-R-` media token with one line break on
+ * either side; and the `''` and `__` delimiters. Each alternative opens with
+ * a literal, and each run stops at the characters that close its form, so one
+ * left-to-right pass is linear in the input.
+ */
+const ICH_MARKUP =
+  /\[\[([^[\]|\r\n]+)\|(https?:\/\/[^\s[\]|]+)\]\]|\^\^([^^|\r\n]+)\|upper\^\^|((?:\r?\n)?-VIDEO:\d+-MED-R-(?:\r?\n)?)|''|__/g;
+const ICH_DELIMITERS = /''|__/g;
+
+/**
+ * Strips the ICH page markup from an `ich001` description, in one pass ahead
+ * of `cleanText`: `''` and `__` delimiters dropped, `[[label|url]]` →
+ * `label (url)`, `^^text|upper^^` → `text`, and each media token replaced by a
+ * paragraph break. A `[[…]]` without an http(s) target, a single `'` or `_`,
+ * and any other text pass through unchanged. Not for other fields: `whc001`
+ * text writes `''` for an apostrophe (`unescapeWhcApostrophes`).
+ */
+export function stripIchMarkup(text: string): string {
+  return text.replace(
+    ICH_MARKUP,
+    (_form, label?: string, url?: string, superscript?: string, media?: string) => {
+      if (label !== undefined) return `${label.replace(ICH_DELIMITERS, '')} (${url})`;
+      if (superscript !== undefined) return superscript.replace(ICH_DELIMITERS, '');
+      return media === undefined ? '' : '\n\n';
+    },
+  );
+}
+
+/** A `'` with no `'` on either side. */
+const SINGLE_APOSTROPHE = /(?<!')'(?!')/;
+
+/**
+ * Undoes the `''` in a `whc001` description or statement, ahead of
+ * `cleanText`. Most values double every apostrophe (`L''viv` → `L'viv`). A
+ * value that also holds a single apostrophe was not escaped that way, and its
+ * `''` is a typed double quote (`the region's ''Third Pole"` → `"Third Pole"`).
+ */
+export function unescapeWhcApostrophes(text: string): string {
+  return text.replaceAll("''", SINGLE_APOSTROPHE.test(text) ? '"' : "'");
+}
+
+/** A nullable or absent `whc001` description or statement with its apostrophes unescaped. */
+function whcProse(text: string | null | undefined): string | null | undefined {
+  return text && unescapeWhcApostrophes(text);
+}
+
 /** Cleans a nullable or absent upstream string; empty results become `undefined`. */
 function cleanOptional(text: string | null | undefined): string | undefined {
   if (text === null || text === undefined) return;
@@ -524,6 +580,19 @@ export function parseComponentsList(list: string | null): {
 export function yearsIn(text: string | null): number[] {
   if (!text) return [];
   return [...text.matchAll(/\d{4}/g)].map((m) => Number(m[0]));
+}
+
+/** A four-digit group, with the `FU` marker UNESCO puts before a follow-up report year. */
+const REVIEW_YEAR = /(\bFU\s*)?\d{4}/g;
+
+/**
+ * The periodic review years of a `mab001` `periodic_review` value, in recorded
+ * order: every four-digit group except a follow-up report year, which UNESCO
+ * marks `FU` (`2014, FU 2016` reads `[2014]`).
+ */
+export function parsePeriodicReviewYears(text: string | null): number[] {
+  if (!text) return [];
+  return [...text.matchAll(REVIEW_YEAR)].flatMap((m) => (m[1] === undefined ? [Number(m[0])] : []));
 }
 
 /**
@@ -595,8 +664,8 @@ function creditsSelected(row: {
 
 /** Maps a validated `whc001` row to a site. */
 export function toHeritageSite(row: WhcRow): { site: HeritageSite; componentParts: number } {
-  const justification = cleanOptional(row.justification_en);
-  const description = cleanOptional(row.short_description_en);
+  const justification = cleanOptional(whcProse(row.justification_en));
+  const description = cleanOptional(whcProse(row.short_description_en));
   const recorded = parseCriteriaTxt(row.criteria_txt);
   const inferred: CriterionCode[] =
     !recorded.includes('vi') && justificationNamesVi(justification) ? ['vi'] : [];
@@ -614,11 +683,11 @@ export function toHeritageSite(row: WhcRow): { site: HeritageSite; componentPart
     ...optionalText('zh', row.name_zh),
   };
   const translations = {
-    ...optionalText('fr', row.short_description_fr),
-    ...optionalText('es', row.short_description_es),
-    ...optionalText('ru', row.short_description_ru),
-    ...optionalText('ar', row.short_description_ar),
-    ...optionalText('zh', row.short_description_zh),
+    ...optionalText('fr', whcProse(row.short_description_fr)),
+    ...optionalText('es', whcProse(row.short_description_es)),
+    ...optionalText('ru', whcProse(row.short_description_ru)),
+    ...optionalText('ar', whcProse(row.short_description_ar)),
+    ...optionalText('zh', whcProse(row.short_description_zh)),
   };
   const imageUrl = creditsSelected(row) ? httpUrl(row.main_image_url) : undefined;
   const copyright = cleanOptional(row.main_image_copyright);
@@ -631,12 +700,12 @@ export function toHeritageSite(row: WhcRow): { site: HeritageSite; componentPart
     states: row.states_names.map(cleanText),
     country_codes: row.iso_codes ?? [],
     region: row.region,
-    transboundary: row.transboundary === 'True',
+    transboundary: row.transboundary,
     inscribed_year: Number(row.date_inscribed),
     secondary_years: secondary,
     criteria: sortCriteria([...recorded, ...inferred]),
     criteria_inferred: inferred,
-    in_danger: row.danger === 'True',
+    in_danger: row.danger,
     ...(dangerYear !== undefined ? { danger_listed_year: dangerYear } : {}),
     ...(row.area_hectares !== null ? { area_hectares: row.area_hectares } : {}),
     ...(point ? { latitude: point[1], longitude: point[0] } : {}),
@@ -683,8 +752,11 @@ export function toIntangibleElement(row: IchRow): IntangibleElement {
     countries: row.countries.map(countryDisplayName),
     multinational: row.countries.length > 1,
     inscribed_year: Number(row.inscription_year),
-    description: cleanText(row.description_en),
-    description_translations: optionalText('fr', row.description_fr),
+    description: cleanText(stripIchMarkup(row.description_en)),
+    description_translations: optionalText(
+      'fr',
+      row.description_fr && stripIchMarkup(row.description_fr),
+    ),
     concepts: (row.concepts_primary_names ?? []).map(cleanText).filter(Boolean),
     concepts_secondary: (row.concepts_secondary_names ?? []).map(cleanText).filter(Boolean),
     world_heritage_sites: parseWhcSites(row.whc_sites),
@@ -723,9 +795,9 @@ export function toBiosphereReserve(row: MabRow): BiosphereReserve {
     designation_year: Number(row.date.slice(0, 4)),
     extension_years: parseFusedYears(row.extension),
     renaming_years: parseFusedYears(row.renaming),
-    periodic_review_years: yearsIn(row.periodic_review),
-    transboundary: row.tbr === 'True',
-    sids: row.sids === 'True',
+    periodic_review_years: parsePeriodicReviewYears(row.periodic_review),
+    transboundary: row.tbr,
+    sids: row.sids,
     area_hectares: {
       total: row.area_total,
       terrestrial: {
@@ -770,7 +842,7 @@ export function toGeopark(row: EgRow): Geopark {
     name: cleanText(row.title_en),
     country_codes: codes,
     countries: codes.map(countryDisplayName),
-    transnational: row.transnational === 'True',
+    transnational: row.transnational,
     designation_year: Number(row.date.slice(0, 4)),
     area_hectares: row.area_total,
     ...(row.population !== null ? { population: row.population } : {}),

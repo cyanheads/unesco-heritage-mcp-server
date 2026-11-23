@@ -21,9 +21,10 @@ import {
   withFakeTimers,
 } from '../fixtures/failures.js';
 import { fieldsWithout, httpFailure, transientFailure, withoutKeys } from '../fixtures/hub.js';
-import { ICH_ROWS, ichRow } from '../fixtures/rows.js';
+import { ICH_MARKUP_ROWS, ICH_ROWS, ichRow } from '../fixtures/rows.js';
 import {
   allText,
+  type ContractResult,
   disposeServiceAfterEach,
   errorOf,
   structured,
@@ -121,7 +122,7 @@ describe('unesco_get_intangible_heritage_element — record', () => {
     });
     const { out, text } = await get({ ich_ref: '114' });
     expect(out.image?.caption).toBe(caption);
-    expect(text).toContain(`Caption: ${caption}\n`);
+    expect(text).toContain(`**Caption:**\n> ${caption}\n\n© Synthetic Photo Agency`);
   });
 
   it('omits caption, copyright, and author from the image when UNESCO records none', async () => {
@@ -387,7 +388,7 @@ describe('unesco_get_intangible_heritage_element — description_language', () =
     ]);
     expect(out.description).toBe('First paragraph.\n\nSecond paragraph.');
     expect(textBlocks(result)).toEqual([
-      '## Synthetic Weaving Rite (ich_ref 1001)\n- **French name:** Rite de Tissage Synthétique\n- **List:** Representative List\n- **Countries:** France (FR), Belgium (BE)\n- **Inscribed:** 2010\n- **Multinational:** Yes\n- **URL:** https://ich.unesco.org/en/RL/09000\n\n**Description:**\n> First paragraph.\n>\n> Second paragraph.\n\n**Concepts:** Textile craft\n**Secondary concepts:** Community, Ritual\n\n**Linked World Heritage sites:**\n- 101 — Alderfen Old Town\n- 102 — Brindle Frontier Forest\n\n**Image:** https://ich.unesco.org/img/photo/thumb/9000.jpg\nCaption: A synthetic caption.\n© Synthetic Photo Agency\nPhoto: A. Tester',
+      '## Synthetic Weaving Rite (ich_ref 1001)\n- **French name:** Rite de Tissage Synthétique\n- **List:** Representative List\n- **Countries:** France (FR), Belgium (BE)\n- **Inscribed:** 2010\n- **Multinational:** Yes\n- **URL:** https://ich.unesco.org/en/RL/09000\n\n**Description:**\n> First paragraph.\n>\n> Second paragraph.\n\n**Concepts:** Textile craft\n**Secondary concepts:** Community, Ritual\n\n**Linked World Heritage sites:**\n- 101 — Alderfen Old Town\n- 102 — Brindle Frontier Forest\n\n**Image:** https://ich.unesco.org/img/photo/thumb/9000.jpg\n\n**Caption:**\n> A synthetic caption.\n\n© Synthetic Photo Agency\nPhoto: A. Tester',
       '\n\nSource: UNESCO — Intangible Heritage List (ich001), data as of 2026-09-30T02:06:00+00:00, CC BY-SA 4.0 · https://creativecommons.org/licenses/by-sa/4.0/',
     ]);
   });
@@ -546,8 +547,7 @@ describe('unesco_get_intangible_heritage_element — format() parity and text sa
     expect(text).toContain('**Concepts:** Line One, Two - item');
     expect(text).toContain('**Secondary concepts:** Sec # Heading');
     expect(text).toContain('- 5 — Site ## Name');
-    expect(text).toContain('Caption: Caption Second');
-    expect(text).toContain('© Owner **bold**');
+    expect(text).toContain('**Caption:**\n> Caption\n> Second\n\n© Owner **bold**');
     expect(text).toContain('Photo: Author Name');
     expect(lines.some((l) => l.startsWith('# Injected') || l.startsWith('## Name'))).toBe(false);
 
@@ -578,4 +578,162 @@ describe('unesco_get_intangible_heritage_element — format() parity and text sa
     );
     expect(text).not.toMatch(/[[\]]/);
   });
+});
+
+describe('unesco_get_intangible_heritage_element — image caption', () => {
+  const IMAGE = 'https://ich.unesco.org/img/photo/thumb/9000.jpg';
+
+  /** The record body's image block, `**Image:**` to the end, one entry per line. */
+  const imageBlock = (result: ContractResult) => {
+    const body = textBlocks(result)[0] ?? '';
+    return body.slice(body.indexOf('**Image:**')).split('\n');
+  };
+
+  /** The caption as content[] quotes it: the lines after `**Caption:**` up to a blank line, `> ` removed. */
+  const quotedCaption = (result: ContractResult) => {
+    const lines = imageBlock(result);
+    const start = lines.indexOf('**Caption:**') + 1;
+    const end = lines.indexOf('', start);
+    expect(start, 'caption label').toBeGreaterThan(0);
+    return lines
+      .slice(start, end === -1 ? undefined : end)
+      .map((line) => line.replace(/^> ?/, ''))
+      .join('\n');
+  };
+
+  const withCaption = (overrides: Record<string, unknown>) =>
+    useHub({ rows: { ich001: [ichRow({ ich_public_ref: '114', ...overrides })] } });
+
+  it('quotes a long caption line for line, its whitespace runs intact', async () => {
+    const caption = `${'Dancers in exceptionally colourful costumes   white robes circle the square. '.repeat(27)}End`;
+    expect(caption.length).toBeGreaterThan(2_000);
+    withCaption({ main_image_caption_en: caption });
+    const { result, out } = await get({ ich_ref: '114' });
+    expect(out.image?.caption).toBe(caption);
+    expect(quotedCaption(result)).toBe(caption);
+  });
+
+  it('renders a caption line break as one quoted line per caption line', async () => {
+    withCaption({ main_image_caption_en: 'Masked dancers at dusk.\nPhoto taken in 2019.' });
+    const { result } = await get({ ich_ref: '114' });
+    expect(imageBlock(result)).toEqual([
+      `**Image:** ${IMAGE}`,
+      '',
+      '**Caption:**',
+      '> Masked dancers at dusk.',
+      '> Photo taken in 2019.',
+      '',
+      '© Synthetic Photo Agency',
+      'Photo: A. Tester',
+    ]);
+  });
+
+  it('sets the caption quote between blank lines, so the credit lines stay outside it', async () => {
+    useHub();
+    const { result } = await get({ ich_ref: '1001' });
+    const lines = imageBlock(result);
+    expect(lines).toEqual([
+      `**Image:** ${IMAGE}`,
+      '',
+      '**Caption:**',
+      '> A synthetic caption.',
+      '',
+      '© Synthetic Photo Agency',
+      'Photo: A. Tester',
+    ]);
+    // CommonMark continues a blockquote onto a following non-blank line; a blank line ends it.
+    const lastQuoted = lines.findLastIndex((line) => line.startsWith('>'));
+    expect(lines[lastQuoted + 1]).toBe('');
+  });
+
+  it('ends the image block at the caption quote when no credit follows', async () => {
+    withCaption({ main_image_copyright: null, main_image_author: null });
+    const { result, out } = await get({ ich_ref: '114' });
+    expect(out.image).toEqual({ url: IMAGE, caption: 'A synthetic caption.' });
+    expect(imageBlock(result)).toEqual([
+      `**Image:** ${IMAGE}`,
+      '',
+      '**Caption:**',
+      '> A synthetic caption.',
+    ]);
+  });
+
+  it('prints no caption label for an image without a caption, credits on single flattened lines', async () => {
+    withCaption({
+      main_image_caption_en: null,
+      main_image_copyright: 'Synthetic   Photo\nAgency',
+      main_image_author: 'A.  Tester',
+    });
+    const { result, out } = await get({ ich_ref: '114' });
+    expect(out.image).toEqual({
+      url: IMAGE,
+      copyright: 'Synthetic   Photo\nAgency',
+      author: 'A.  Tester',
+    });
+    expect(imageBlock(result)).toEqual([
+      `**Image:** ${IMAGE}`,
+      '© Synthetic Photo Agency',
+      'Photo: A. Tester',
+    ]);
+  });
+
+  it('escapes link and HTML syntax inside the quoted caption', async () => {
+    withCaption({
+      main_image_caption_en: 'See [the rite](https://example.test/x) <span>now</span>',
+    });
+    const { result } = await get({ ich_ref: '114' });
+    expect(imageBlock(result)).toContain(
+      '> See \\[the rite\\](https://example.test/x) \\<span\\>now\\</span\\>',
+    );
+  });
+});
+
+describe('unesco_get_intangible_heritage_element — ICH page markup', () => {
+  beforeEach(() => {
+    useHub({ rows: { ich001: [...ICH_ROWS, ...ICH_MARKUP_ROWS] } });
+  });
+
+  const MARKUP = ["''", '__', '[[', '\\[\\[', '^^', '-VIDEO:', 'MED-R'];
+
+  /** The quote content[] renders under `**{label}:**`, up to the blank line that closes it. */
+  const renderedQuote = (body: string, label: string) => {
+    const head = `**${label}:**\n`;
+    const start = body.indexOf(head);
+    expect(start, `${label} label`).toBeGreaterThanOrEqual(0);
+    const end = body.indexOf('\n\n', start + head.length);
+    return body.slice(start + head.length, end === -1 ? undefined : end);
+  };
+
+  it.each([
+    [
+      'English',
+      {},
+      'Description',
+      'Northern Federation\nSynthetic wrestling is played with a satba belt.\nIt is taught at all levels.\n\nSouthern Republic\nSynthetic wrestling is a popular sport.\n\nOn 1 May 2024, the Committee renamed the element (Decision 19.COM 7 (https://ich.unesco.org/en/decisions/19.COM/7)).',
+    ],
+    [
+      'French',
+      { description_language: 'fr' },
+      'Description (fr)',
+      "Fédération du Nord\nLa lutte se pratique depuis le XVIIIe siècle avec des satbas.\n\nRépublique du Sud\nCas d'extrême urgence, un_tiret, et le XIXe siècle.",
+    ],
+  ])(
+    'serves the %s description without the page markup on both surfaces',
+    async (_label, input, label, expected) => {
+      const { result, out } = await get({ ich_ref: '1101', ...input });
+      const body = textBlocks(result)[0] ?? '';
+      // Nothing in the rendered quote renders bold or italic.
+      expect(renderedQuote(body, label)).not.toMatch(/\*\*|__/);
+      expect(out.description).toBe(expected);
+      const quote = expected
+        .split('\n')
+        .map((line) => (line === '' ? '>' : `> ${line}`))
+        .join('\n');
+      expect(body).toContain(`**${label}:**\n${quote}\n\n**Concepts:**`);
+      for (const form of MARKUP) {
+        expect(out.description, form).not.toContain(form);
+        expect(body, form).not.toContain(form);
+      }
+    },
+  );
 });
